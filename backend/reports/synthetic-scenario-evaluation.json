@@ -1,0 +1,214 @@
+{
+  "evaluation_type": "synthetic_engineered_scenarios",
+  "label_warning": "Expected risk levels are policy checks for engineered input conditions, not independently verified fraud outcomes. Scenario pass rates are not PaySim or real-world detection performance.",
+  "latency_scope": "Hybrid scorer including feature construction, Isolation Forest scoring, and rule evaluation; excludes HTTP, database, and client latency.",
+  "summary": {
+    "scenario_count": 13,
+    "passing_scenarios": 13,
+    "failing_scenarios": [],
+    "scenario_pass_rate": 1.0,
+    "risk_level_counts": {
+      "LOW": 2,
+      "MEDIUM": 10,
+      "HIGH": 1
+    },
+    "expected_risk_level_counts": {
+      "LOW": 2,
+      "MEDIUM": 10,
+      "HIGH": 1
+    },
+    "latency_runs_per_scenario": 100
+  },
+  "scenarios": [
+    {
+      "scenario": "NORMAL",
+      "expected_risk_level": "LOW",
+      "risk_score": 0.1523,
+      "risk_level": "LOW",
+      "detected_as_risk": false,
+      "outcome_matches_expectation": true,
+      "reason_codes": [],
+      "mean_scoring_latency_ms": 20.39718799991533,
+      "p95_scoring_latency_ms": 33.757309999782585,
+      "latency_runs": 100
+    },
+    {
+      "scenario": "RECENT_SIM_SWAP",
+      "expected_risk_level": "MEDIUM",
+      "risk_score": 0.3,
+      "risk_level": "MEDIUM",
+      "detected_as_risk": true,
+      "outcome_matches_expectation": true,
+      "reason_codes": [
+        "Recent SIM change"
+      ],
+      "mean_scoring_latency_ms": 22.037124001653865,
+      "p95_scoring_latency_ms": 29.570530014461838,
+      "latency_runs": 100
+    },
+    {
+      "scenario": "DEVICE_CHANGE",
+      "expected_risk_level": "MEDIUM",
+      "risk_score": 0.3,
+      "risk_level": "MEDIUM",
+      "detected_as_risk": true,
+      "outcome_matches_expectation": true,
+      "reason_codes": [
+        "New or changed device"
+      ],
+      "mean_scoring_latency_ms": 18.153785000322387,
+      "p95_scoring_latency_ms": 31.3322900008643,
+      "latency_runs": 100
+    },
+    {
+      "scenario": "IP_MISMATCH",
+      "expected_risk_level": "MEDIUM",
+      "risk_score": 0.3,
+      "risk_level": "MEDIUM",
+      "detected_as_risk": true,
+      "outcome_matches_expectation": true,
+      "reason_codes": [
+        "IP/network mismatch"
+      ],
+      "mean_scoring_latency_ms": 19.080856998916715,
+      "p95_scoring_latency_ms": 27.787969968630932,
+      "latency_runs": 100
+    },
+    {
+      "scenario": "VELOCITY_SPIKE",
+      "expected_risk_level": "MEDIUM",
+      "risk_score": 0.3,
+      "risk_level": "MEDIUM",
+      "detected_as_risk": true,
+      "outcome_matches_expectation": true,
+      "reason_codes": [
+        "Unusual transaction velocity"
+      ],
+      "mean_scoring_latency_ms": 22.41833299805876,
+      "p95_scoring_latency_ms": 34.49132500682026,
+      "latency_runs": 100
+    },
+    {
+      "scenario": "FREQUENCY_SPIKE",
+      "expected_risk_level": "MEDIUM",
+      "risk_score": 0.3,
+      "risk_level": "MEDIUM",
+      "detected_as_risk": true,
+      "outcome_matches_expectation": true,
+      "reason_codes": [
+        "Today's transaction frequency is above the customer's historical pattern"
+      ],
+      "mean_scoring_latency_ms": 17.01302199740894,
+      "p95_scoring_latency_ms": 22.301364981103685,
+      "latency_runs": 100
+    },
+    {
+      "scenario": "AMOUNT_DEVIATION",
+      "expected_risk_level": "MEDIUM",
+      "risk_score": 0.3,
+      "risk_level": "MEDIUM",
+      "detected_as_risk": true,
+      "outcome_matches_expectation": true,
+      "reason_codes": [
+        "Amount deviates sharply from the customer's usual pattern"
+      ],
+      "mean_scoring_latency_ms": 14.148226999095641,
+      "p95_scoring_latency_ms": 16.164675008621998,
+      "latency_runs": 100
+    },
+    {
+      "scenario": "UNUSUAL_HOUR",
+      "expected_risk_level": "MEDIUM",
+      "risk_score": 0.3,
+      "risk_level": "MEDIUM",
+      "detected_as_risk": true,
+      "outcome_matches_expectation": true,
+      "reason_codes": [
+        "Transaction outside the customer's usual active hours"
+      ],
+      "mean_scoring_latency_ms": 13.879803002346307,
+      "p95_scoring_latency_ms": 15.623405031510629,
+      "latency_runs": 100
+    },
+    {
+      "scenario": "NEW_RECIPIENT",
+      "expected_risk_level": "MEDIUM",
+      "risk_score": 0.3,
+      "risk_level": "MEDIUM",
+      "detected_as_risk": true,
+      "outcome_matches_expectation": true,
+      "reason_codes": [
+        "New recipient"
+      ],
+      "mean_scoring_latency_ms": 17.041882003541104,
+      "p95_scoring_latency_ms": 27.25013002054765,
+      "latency_runs": 100
+    },
+    {
+      "scenario": "HIGH_BALANCE_SHARE_ONLY",
+      "expected_risk_level": "LOW",
+      "risk_score": 0.2164,
+      "risk_level": "LOW",
+      "detected_as_risk": false,
+      "outcome_matches_expectation": true,
+      "reason_codes": [
+        "Transaction uses a high proportion of the available balance"
+      ],
+      "mean_scoring_latency_ms": 17.356265002163127,
+      "p95_scoring_latency_ms": 27.985959968646057,
+      "latency_runs": 100
+    },
+    {
+      "scenario": "DRAINED_HIGH_BALANCE_SHARE",
+      "expected_risk_level": "MEDIUM",
+      "risk_score": 0.3345,
+      "risk_level": "MEDIUM",
+      "detected_as_risk": true,
+      "outcome_matches_expectation": true,
+      "reason_codes": [
+        "Account balance was fully drained",
+        "Transaction uses a high proportion of the available balance"
+      ],
+      "mean_scoring_latency_ms": 14.310440999106504,
+      "p95_scoring_latency_ms": 16.57152500702068,
+      "latency_runs": 100
+    },
+    {
+      "scenario": "DRAINED_NEW_RECIPIENT",
+      "expected_risk_level": "MEDIUM",
+      "risk_score": 0.491,
+      "risk_level": "MEDIUM",
+      "detected_as_risk": true,
+      "outcome_matches_expectation": true,
+      "reason_codes": [
+        "Account balance was fully drained",
+        "Destination balance is zero",
+        "New recipient",
+        "Transaction uses a high proportion of the available balance"
+      ],
+      "mean_scoring_latency_ms": 13.972402003128082,
+      "p95_scoring_latency_ms": 15.201534965308383,
+      "latency_runs": 100
+    },
+    {
+      "scenario": "COMPOUND_SECURITY_SIGNALS",
+      "expected_risk_level": "HIGH",
+      "risk_score": 0.5423,
+      "risk_level": "HIGH",
+      "detected_as_risk": true,
+      "outcome_matches_expectation": true,
+      "reason_codes": [
+        "New or changed device",
+        "IP/network mismatch",
+        "Recent SIM change",
+        "Amount deviates sharply from the customer's usual pattern",
+        "Transaction outside the customer's usual active hours",
+        "Unusual transaction velocity",
+        "Today's transaction frequency is above the customer's historical pattern"
+      ],
+      "mean_scoring_latency_ms": 14.58274400269147,
+      "p95_scoring_latency_ms": 18.799329956527796,
+      "latency_runs": 100
+    }
+  ]
+}

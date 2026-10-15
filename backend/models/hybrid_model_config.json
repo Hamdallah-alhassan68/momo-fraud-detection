@@ -1,0 +1,41 @@
+{
+    "model_type": "Hybrid Isolation Forest + Rule-Based Heuristics",
+    "if_weight": 0.4,
+    "rule_weight": 0.6,
+    "risk_threshold": 0.5434936666455774,
+    "low_threshold": 0.3,
+    "medium_threshold": 0.5,
+    "amount_threshold": 2644632.512800004,
+    "velocity_threshold": 64.0,
+    "velocity_window": 3,
+    "num_simulated_devices": 1000,
+    "iso_features": [
+        "amount",
+        "log_amount",
+        "oldbalanceOrg",
+        "newbalanceOrig",
+        "oldbalanceDest",
+        "newbalanceDest",
+        "errorBalanceOrig",
+        "errorBalanceDest",
+        "amount_to_origin_balance",
+        "amount_to_dest_balance",
+        "dest_previous_count",
+        "recipient_novel",
+        "is_transfer",
+        "is_cashout"
+    ],
+    "security_signals": [
+        "device_change",
+        "ip_network_mismatch",
+        "recent_sim_swap",
+        "velocity_spike"
+    ],
+    "roc_auc": 0.9067878629741193,
+    "pr_auc": 0.4345117677315728,
+    "precision": 0.5573440643863179,
+    "recall": 0.4424920127795527,
+    "f1": 0.4933214603739982,
+    "iso_min": -0.1655995456663541,
+    "iso_max": 0.2741078108864944
+}

@@ -1,0 +1,276 @@
+{
+  "model_type": "Hybrid Isolation Forest + Rule-Based Heuristics",
+  "if_weight": 0.4,
+  "rule_weight": 0.6,
+  "risk_threshold": 0.5434936666455774,
+  "low_threshold": 0.3,
+  "medium_threshold": 0.5,
+  "amount_threshold": 2644632.512800004,
+  "velocity_threshold": 64.0,
+  "velocity_window": 3,
+  "num_simulated_devices": 1000,
+  "iso_features": [
+    "amount",
+    "log_amount",
+    "oldbalanceOrg",
+    "newbalanceOrig",
+    "oldbalanceDest",
+    "newbalanceDest",
+    "errorBalanceOrig",
+    "errorBalanceDest",
+    "amount_to_origin_balance",
+    "amount_to_dest_balance",
+    "dest_previous_count",
+    "recipient_novel",
+    "is_transfer",
+    "is_cashout"
+  ],
+  "security_signals": [
+    "device_change",
+    "ip_network_mismatch",
+    "recent_sim_swap",
+    "velocity_spike"
+  ],
+  "roc_auc": 0.8105493005690417,
+  "pr_auc": 0.037297711583678984,
+  "precision": 0.04528985507246377,
+  "recall": 0.3968253968253968,
+  "f1": 0.08130081300813008,
+  "iso_min": -0.16574139809961708,
+  "iso_max": 0.26079090535251526,
+  "evaluation": {
+    "dataset": "paysim.csv",
+    "dataset_sha256": "16910f90577b0d981bf8ff289714510bb89bc71bff7d3f220f024e287e4eea6b",
+    "dataset_rows_used": 300000,
+    "eligible_dataset_rows": 2770409,
+    "sampled_eligible_rows": 300000,
+    "positive_count": 862,
+    "seed": 7,
+    "split": {
+      "train": 0.6,
+      "validation": 0.2,
+      "test": 0.2,
+      "type": "chronological",
+      "ordered_by": "step",
+      "same_step_kept_together": true
+    },
+    "split_counts": {
+      "train": {
+        "rows": 180849,
+        "fraud_labels": 351,
+        "step_min": 1,
+        "step_max": 281
+      },
+      "validation": {
+        "rows": 59443,
+        "fraud_labels": 70,
+        "step_min": 282,
+        "step_max": 354
+      },
+      "test": {
+        "rows": 59708,
+        "fraud_labels": 441,
+        "step_min": 355,
+        "step_max": 741
+      }
+    },
+    "threshold_selection": {
+      "policy": "Select the candidate maximizing validation F2 to weight fraud recall more than precision; ties prefer higher precision, then a lower false-positive rate. Model fitting uses only normal training rows.",
+      "operational_interpretation": "A positive anomaly flag is a candidate for MEDIUM-risk step-up/review, not an automatic block. Runtime hybrid risk bands are not changed by this evaluation.",
+      "selected_training_normal_quantile": 0.95,
+      "selected_threshold": 0.4801141991431183,
+      "validation_candidates": [
+        {
+          "training_normal_quantile": 0.9,
+          "threshold": 0.38402452211656407,
+          "precision": 0.0048655569782330346,
+          "recall": 0.5428571428571428,
+          "f1": 0.009644670050761422,
+          "f2": 0.023485784919653894,
+          "false_positive_rate": 0.13090125141057382,
+          "flagged_count": 7810,
+          "fraud_count": 70,
+          "true_positive_count": 38,
+          "false_positive_count": 7772,
+          "false_negative_count": 32,
+          "true_negative_count": 51601,
+          "precision_ci_95": [
+            0.003547044376670752,
+            0.0066709078612217495
+          ],
+          "recall_ci_95": [
+            0.42698259205475575,
+            0.6542725740243641
+          ]
+        },
+        {
+          "training_normal_quantile": 0.95,
+          "threshold": 0.4801141991431183,
+          "precision": 0.005133267522211254,
+          "recall": 0.37142857142857144,
+          "f1": 0.010126582278481013,
+          "f2": 0.02432179607109448,
+          "false_positive_rate": 0.0848702272076533,
+          "flagged_count": 5065,
+          "fraud_count": 70,
+          "true_positive_count": 26,
+          "false_positive_count": 5039,
+          "false_negative_count": 44,
+          "true_negative_count": 54334,
+          "precision_ci_95": [
+            0.0035055656676008474,
+            0.007511046170498757
+          ],
+          "recall_ci_95": [
+            0.26770651334691126,
+            0.4885279884157288
+          ]
+        },
+        {
+          "training_normal_quantile": 0.975,
+          "threshold": 0.5631176523851796,
+          "precision": 0.004622941346431667,
+          "recall": 0.22857142857142856,
+          "f1": 0.009062588501840838,
+          "f2": 0.021384656508954825,
+          "false_positive_rate": 0.05802300709076516,
+          "flagged_count": 3461,
+          "fraud_count": 70,
+          "true_positive_count": 16,
+          "false_positive_count": 3445,
+          "false_negative_count": 54,
+          "true_negative_count": 55928,
+          "precision_ci_95": [
+            0.0028476446402758257,
+            0.007496684024301299
+          ],
+          "recall_ci_95": [
+            0.14588063222572434,
+            0.33950331593984906
+          ]
+        },
+        {
+          "training_normal_quantile": 0.99,
+          "threshold": 0.6560649281949529,
+          "precision": 0.0025806451612903226,
+          "recall": 0.08571428571428572,
+          "f1": 0.005010438413361169,
+          "f2": 0.011516314779270634,
+          "false_positive_rate": 0.03905815774847153,
+          "flagged_count": 2325,
+          "fraud_count": 70,
+          "true_positive_count": 6,
+          "false_positive_count": 2319,
+          "false_negative_count": 64,
+          "true_negative_count": 57054,
+          "precision_ci_95": [
+            0.0011832529503447288,
+            0.005619038704457789
+          ],
+          "recall_ci_95": [
+            0.039876669645112064,
+            0.1746567249233948
+          ]
+        },
+        {
+          "training_normal_quantile": 0.995,
+          "threshold": 0.7137739073608526,
+          "precision": 0.0011242270938729624,
+          "recall": 0.02857142857142857,
+          "f1": 0.002163331530557058,
+          "f2": 0.0048567265662943174,
+          "false_positive_rate": 0.029929429201825744,
+          "flagged_count": 1779,
+          "fraud_count": 70,
+          "true_positive_count": 2,
+          "false_positive_count": 1777,
+          "false_negative_count": 68,
+          "true_negative_count": 57596,
+          "precision_ci_95": [
+            0.00030835777689270033,
+            0.004089935061709481
+          ],
+          "recall_ci_95": [
+            0.007870611945441225,
+            0.09832256118423902
+          ]
+        }
+      ],
+      "selected_holdout_metrics": {
+        "threshold": 0.4801141991431183,
+        "precision": 0.04528985507246377,
+        "recall": 0.3968253968253968,
+        "f1": 0.08130081300813008,
+        "f2": 0.1554726368159204,
+        "false_positive_rate": 0.06224374441088633,
+        "flagged_count": 3864,
+        "fraud_count": 441,
+        "true_positive_count": 175,
+        "false_positive_count": 3689,
+        "false_negative_count": 266,
+        "true_negative_count": 55578,
+        "precision_ci_95": [
+          0.03917277256425425,
+          0.052310154693209016
+        ],
+        "recall_ci_95": [
+          0.3522437357095816,
+          0.44318900061574334
+        ]
+      },
+      "baseline_99th_percentile": {
+        "threshold": 0.6560649281949529,
+        "precision": 0.053061224489795916,
+        "recall": 0.1473922902494331,
+        "f1": 0.07803121248499399,
+        "f2": 0.10873201739712275,
+        "false_positive_rate": 0.01957244334958746,
+        "flagged_count": 1225,
+        "fraud_count": 441,
+        "true_positive_count": 65,
+        "false_positive_count": 1160,
+        "false_negative_count": 376,
+        "true_negative_count": 58107,
+        "precision_ci_95": [
+          0.04184790642481386,
+          0.06706887682657509
+        ],
+        "recall_ci_95": [
+          0.1173542606011056,
+          0.18352025585137888
+        ]
+      }
+    },
+    "threshold_quantile": 0.95,
+    "threshold": 0.4801141991431183,
+    "roc_auc": 0.8105493005690417,
+    "pr_auc": 0.037297711583678984,
+    "test_fraud_prevalence": 0.007385944932002412,
+    "runtime_model_modified": false,
+    "precision": 0.04528985507246377,
+    "recall": 0.3968253968253968,
+    "f1": 0.08130081300813008,
+    "f2": 0.1554726368159204,
+    "false_positive_rate": 0.06224374441088633,
+    "mean_model_latency_ms_per_transaction": 16.592878099763766,
+    "p95_model_latency_ms_per_transaction": 20.691840039216913,
+    "latency_measurement": "decision_function only; excludes HTTP and feature construction"
+  },
+  "feature_names": [
+    "amount",
+    "log_amount",
+    "oldbalanceOrg",
+    "newbalanceOrig",
+    "oldbalanceDest",
+    "newbalanceDest",
+    "errorBalanceOrig",
+    "errorBalanceDest",
+    "amount_to_origin_balance",
+    "amount_to_dest_balance",
+    "dest_previous_count",
+    "recipient_novel",
+    "is_transfer",
+    "is_cashout"
+  ],
+  "training_seed": 7
+}

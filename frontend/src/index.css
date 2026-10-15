@@ -1,0 +1,95 @@
+:root {
+  font-size: 19px;
+  font-family: "Aptos", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  color: #193348;
+  background: #f4f6f5;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  --mtn-yellow: #ffcc00;
+  --mtn-yellow-deep: #d9a900;
+  --mtn-blue: #00678f;
+  --mtn-navy: #082f49;
+  --mtn-ink: #193348;
+  --mtn-muted: #6d7d89;
+  --mtn-border: #e2e8e7;
+  --mtn-canvas: #f4f6f5;
+  --heading: "Aptos Display", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  --mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 360px;
+  min-height: 100vh;
+  margin: 0;
+  background: var(--mtn-canvas);
+  color: var(--mtn-ink);
+  font-family: inherit;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid rgba(0, 103, 143, 0.28);
+  outline-offset: 2px;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  color: var(--mtn-navy);
+  font-family: var(--heading);
+}
+
+h1 {
+  letter-spacing: -0.045em;
+}
+
+h2,
+h3 {
+  letter-spacing: -0.025em;
+}
+
+p {
+  margin: 0;
+}
+
+code,
+.mono {
+  font-family: var(--mono);
+}
+
+::selection {
+  color: var(--mtn-navy);
+  background: rgba(255, 204, 0, 0.48);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

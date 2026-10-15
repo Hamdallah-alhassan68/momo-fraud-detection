@@ -1,0 +1,187 @@
+{
+  "model_type": "Hybrid Isolation Forest + Rule-Based Heuristics",
+  "if_weight": 0.4,
+  "rule_weight": 0.6,
+  "risk_threshold": 0.5434936666455774,
+  "low_threshold": 0.3,
+  "medium_threshold": 0.5,
+  "amount_threshold": 2644632.512800004,
+  "velocity_threshold": 64.0,
+  "velocity_window": 3,
+  "num_simulated_devices": 1000,
+  "iso_features": [
+    "amount",
+    "log_amount",
+    "oldbalanceOrg",
+    "newbalanceOrig",
+    "oldbalanceDest",
+    "newbalanceDest",
+    "errorBalanceOrig",
+    "errorBalanceDest",
+    "amount_to_origin_balance",
+    "amount_to_dest_balance",
+    "dest_previous_count",
+    "recipient_novel",
+    "is_transfer",
+    "is_cashout"
+  ],
+  "security_signals": [
+    "device_change",
+    "ip_network_mismatch",
+    "recent_sim_swap",
+    "velocity_spike"
+  ],
+  "roc_auc": 0.8831145706145705,
+  "pr_auc": 0.03632775593701408,
+  "precision": 0.03631961259079903,
+  "recall": 0.5555555555555556,
+  "f1": 0.06818181818181818,
+  "iso_min": -0.1765955746017141,
+  "iso_max": 0.27906534748077405,
+  "evaluation": {
+    "dataset": "paysim.csv",
+    "dataset_sha256": "16910f90577b0d981bf8ff289714510bb89bc71bff7d3f220f024e287e4eea6b",
+    "dataset_rows_used": 43814,
+    "positive_count": 134,
+    "seed": 42,
+    "split": {
+      "train": 0.6,
+      "validation": 0.2,
+      "test": 0.2,
+      "stratified": true
+    },
+    "split_counts": {
+      "train": {
+        "rows": 26288,
+        "fraud_labels": 80
+      },
+      "validation": {
+        "rows": 8763,
+        "fraud_labels": 27
+      },
+      "test": {
+        "rows": 8763,
+        "fraud_labels": 27
+      }
+    },
+    "threshold_selection": {
+      "policy": "Select the candidate maximizing validation F2 to weight fraud recall more than precision; ties prefer higher precision, then a lower false-positive rate. Model fitting uses only normal training rows.",
+      "operational_interpretation": "A positive anomaly flag is a candidate for MEDIUM-risk step-up/review, not an automatic block. Runtime hybrid risk bands are not changed by this evaluation.",
+      "selected_training_normal_quantile": 0.95,
+      "selected_threshold": 0.4533173142582066,
+      "validation_candidates": [
+        {
+          "training_normal_quantile": 0.9,
+          "threshold": 0.34407878419619903,
+          "precision": 0.014672686230248307,
+          "recall": 0.48148148148148145,
+          "f1": 0.028477546549835708,
+          "f2": 0.0653923541247485,
+          "false_positive_rate": 0.09993131868131869,
+          "flagged_count": 886,
+          "fraud_count": 27,
+          "false_positive_count": 873
+        },
+        {
+          "training_normal_quantile": 0.95,
+          "threshold": 0.4533173142582066,
+          "precision": 0.017316017316017316,
+          "recall": 0.2962962962962963,
+          "f1": 0.032719836400818,
+          "f2": 0.07017543859649124,
+          "false_positive_rate": 0.05196886446886447,
+          "flagged_count": 462,
+          "fraud_count": 27,
+          "false_positive_count": 454
+        },
+        {
+          "training_normal_quantile": 0.975,
+          "threshold": 0.5331492544158078,
+          "precision": 0.017316017316017316,
+          "recall": 0.14814814814814814,
+          "f1": 0.031007751937984496,
+          "f2": 0.05899705014749263,
+          "false_positive_rate": 0.025984432234432236,
+          "flagged_count": 231,
+          "fraud_count": 27,
+          "false_positive_count": 227
+        },
+        {
+          "training_normal_quantile": 0.99,
+          "threshold": 0.6371523347258361,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "f2": 0.0,
+          "false_positive_rate": 0.010073260073260074,
+          "flagged_count": 88,
+          "fraud_count": 27,
+          "false_positive_count": 88
+        },
+        {
+          "training_normal_quantile": 0.995,
+          "threshold": 0.720885734376943,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "f2": 0.0,
+          "false_positive_rate": 0.004464285714285714,
+          "flagged_count": 39,
+          "fraud_count": 27,
+          "false_positive_count": 39
+        }
+      ],
+      "selected_holdout_metrics": {
+        "threshold": 0.4533173142582066,
+        "precision": 0.03631961259079903,
+        "recall": 0.5555555555555556,
+        "f1": 0.06818181818181818,
+        "f2": 0.14395393474088292,
+        "false_positive_rate": 0.045558608058608056,
+        "flagged_count": 413,
+        "fraud_count": 27,
+        "false_positive_count": 398
+      },
+      "baseline_99th_percentile": {
+        "threshold": 0.6371523347258361,
+        "precision": 0.045454545454545456,
+        "recall": 0.14814814814814814,
+        "f1": 0.06956521739130435,
+        "f2": 0.10204081632653061,
+        "false_positive_rate": 0.009615384615384616,
+        "flagged_count": 88,
+        "fraud_count": 27,
+        "false_positive_count": 84
+      }
+    },
+    "threshold_quantile": 0.95,
+    "threshold": 0.4533173142582066,
+    "roc_auc": 0.8831145706145705,
+    "pr_auc": 0.03632775593701408,
+    "precision": 0.03631961259079903,
+    "recall": 0.5555555555555556,
+    "f1": 0.06818181818181818,
+    "f2": 0.14395393474088292,
+    "false_positive_rate": 0.045558608058608056,
+    "mean_model_latency_ms_per_transaction": 8.687987200100906,
+    "p95_model_latency_ms_per_transaction": 10.665095003787428,
+    "latency_measurement": "decision_function only; excludes HTTP and feature construction"
+  },
+  "feature_names": [
+    "amount",
+    "log_amount",
+    "oldbalanceOrg",
+    "newbalanceOrig",
+    "oldbalanceDest",
+    "newbalanceDest",
+    "errorBalanceOrig",
+    "errorBalanceDest",
+    "amount_to_origin_balance",
+    "amount_to_dest_balance",
+    "dest_previous_count",
+    "recipient_novel",
+    "is_transfer",
+    "is_cashout"
+  ],
+  "training_seed": 42
+}

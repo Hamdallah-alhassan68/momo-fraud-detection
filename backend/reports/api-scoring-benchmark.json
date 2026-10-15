@@ -1,0 +1,18 @@
+{
+  "benchmark_type": "in_process_asgi_scoring_route",
+  "measured_at_utc": "2026-10-12T03:56:35.756595+00:00",
+  "python_version": "3.13.7",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "scope": "Includes ASGI request handling, admin-token authentication, feature construction, hybrid model/rule scoring, and SQLite persistence. Excludes network sockets, reverse proxies, and deployment overhead.",
+  "database": "temporary isolated SQLite database",
+  "warmup_runs": 10,
+  "measured_runs": 100,
+  "latency_unit": "milliseconds",
+  "latency": {
+    "mean": 32.089377001393586,
+    "median": 31.407999980729073,
+    "p95": 37.81969996634871,
+    "min": 26.921199983917177,
+    "max": 41.17469995981082
+  }
+}
