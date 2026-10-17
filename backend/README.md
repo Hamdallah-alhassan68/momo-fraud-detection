@@ -35,6 +35,48 @@ the full path to that interpreter instead:
 C:\Path\To\Python313\python.exe -m venv .venv-py313
 ```
 
+## Deploying the frontend
+
+The repository includes a Render Blueprint at `render.yaml` for the FastAPI
+backend. Push the repository to GitHub, create a new Blueprint in Render, and
+select that repository. During setup, enter `FRONTEND_ORIGINS` as the exact
+Vercel frontend origin, such as `https://<project>.vercel.app` (no trailing
+slash). The Blueprint selects Python 3.13.7, installs `backend/requirements.txt`,
+starts Uvicorn on Render's assigned port, generates persistent authentication
+and audit secrets, and stores SQLite at `/var/data/fraud.db` on a 1 GB
+persistent disk. Render requires a paid web-service plan for persistent disks.
+Keep the service at one instance while using its SQLite database and
+in-process event stream.
+
+Once the backend deploy finishes, copy its public HTTPS origin from Render.
+For a Vercel frontend deployment, set the project root directory to `frontend`,
+use `npm run build` as the build command, and `dist` as the output directory.
+Add this Vercel environment variable for the production, preview, and
+development environments you use:
+
+```text
+VITE_API_URL=https://<your-deployed-backend-origin>
+```
+
+Use the backend origin only (no `/api` suffix). The frontend defaults to
+`http://127.0.0.1:5001` for local development when this variable is unset.
+Redeploy the frontend after changing Vercel environment variables.
+
+The FastAPI backend must be deployed separately. Configure its
+`FRONTEND_ORIGINS` with the exact Vercel site origin(s), comma-separated, for
+example `https://<project>.vercel.app,https://<custom-domain>`. Set stable,
+random server-side secrets for `MOMO_AUTH_SECRET` and `MOMO_AUDIT_HMAC_KEY`;
+never put these secrets in Vercel's `VITE_*` variables, which are exposed to
+the browser. `MOMO_MODEL_DIR` is optional if the default
+`backend/models/paysim-runtime` artifacts are included with the backend.
+
+This is a public demo prototype with documented, built-in demo accounts. Do
+not use real customer data, real payment credentials, or treat the deployment
+as a production fraud-control service. A production deployment needs
+deployment-specific access controls and a security review. SQLite is
+configured for Render's persistent disk; do not move the API to stateless
+serverless functions without migrating the database and event-stream design.
+
 ## Validation limitations
 
 The runtime evaluation data is synthetic PaySim data. Its reported metrics

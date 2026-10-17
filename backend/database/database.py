@@ -12,7 +12,9 @@ import json
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-DATABASE_PATH = BASE_DIR / "fraud.db"
+DATABASE_PATH = Path(
+    os.getenv("MOMO_DATABASE_PATH", BASE_DIR / "fraud.db")
+).expanduser().resolve()
 GHANA_TIMEZONE = ZoneInfo("Africa/Accra")
 logger = logging.getLogger(__name__)
 
@@ -152,6 +154,7 @@ def get_connection():
     Create a connection to the SQLite database.
     """
 
+    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(
         DATABASE_PATH
     )

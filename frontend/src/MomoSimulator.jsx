@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
+import { API_URL } from "./adminApi.js";
 import "./MomoSimulator.css";
-
-const API_URL = "http://127.0.0.1:5001";
 
 const TYPE_OPTIONS = [
   { value: "TRANSFER", label: "Wallet to Wallet", medium: "PIN" },
