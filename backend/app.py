@@ -58,19 +58,21 @@ app = FastAPI(
 )
 
 frontend_env = os.getenv("FRONTEND_ORIGINS", "")
-origins = (
-    [origin.strip() for origin in frontend_env.split(",") if origin.strip()]
-    if frontend_env
-    else [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "http://localhost:5175",
-        "http://127.0.0.1:5175",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
+origins = [
+    "https://momo-fraud-detection-xrkw.vercel.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+    "http://localhost:5175",
+    "http://127.0.0.1:5175",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+origins.extend(
+    origin.strip()
+    for origin in frontend_env.split(",")
+    if origin.strip() and origin.strip() not in origins
 )
 app.add_middleware(
     CORSMiddleware,
