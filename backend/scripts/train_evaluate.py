@@ -17,6 +17,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+import sklearn
 from sklearn.ensemble import IsolationForest
 from sklearn.metrics import (
     average_precision_score,
@@ -274,6 +275,77 @@ def _threshold_metrics(labels, scores, threshold):
     }
 
 
+def _hybrid_rule_scores(matrix, amount_threshold):
+    return (
+        0.20
+        * (
+            (matrix["oldbalanceOrg"].to_numpy() > 0)
+            & (matrix["newbalanceOrig"].to_numpy() == 0)
+        )
+        + 0.10 * (matrix["newbalanceDest"].to_numpy() == 0)
+        + 0.10 * (matrix["recipient_novel"].to_numpy() != 0)
+        + 0.15 * (matrix["amount_to_origin_balance"].to_numpy() >= 0.90)
+        + 0.10 * (matrix["amount"].to_numpy() >= amount_threshold)
+    ).astype(float)
+
+
+def _hybrid_policy_time_windows(
+    steps,
+    labels,
+    scores,
+    medium_boundary,
+    high_boundary,
+    window_count=4,
+):
+    if window_count < 1:
+        raise ValueError("window_count must be at least 1")
+    if not (len(steps) == len(labels) == len(scores)):
+        raise ValueError("steps, labels, and scores must have equal lengths")
+
+    ordered_steps = np.unique(steps)
+    if not len(ordered_steps):
+        return []
+
+    windows = np.array_split(ordered_steps, min(window_count, len(ordered_steps)))
+    results = []
+    for index, window_steps in enumerate(windows, start=1):
+        mask = np.isin(steps, window_steps)
+        window_labels = labels[mask]
+        window_scores = scores[mask]
+        cumulative_mask = steps <= window_steps[-1]
+        cumulative_labels = labels[cumulative_mask]
+        cumulative_scores = scores[cumulative_mask]
+        results.append({
+            "window": index,
+            "step_min": int(window_steps[0]),
+            "step_max": int(window_steps[-1]),
+            "rows": int(mask.sum()),
+            "fraud_labels": int(window_labels.sum()),
+            "medium_or_high": _threshold_metrics(
+                window_labels, window_scores, medium_boundary
+            ),
+            "high": _threshold_metrics(
+                window_labels, window_scores, high_boundary
+            ),
+            "cumulative": {
+                "through_step": int(window_steps[-1]),
+                "rows": int(cumulative_mask.sum()),
+                "fraud_labels": int(cumulative_labels.sum()),
+                "medium_or_high": _threshold_metrics(
+                    cumulative_labels,
+                    cumulative_scores,
+                    medium_boundary,
+                ),
+                "high": _threshold_metrics(
+                    cumulative_labels,
+                    cumulative_scores,
+                    high_boundary,
+                ),
+            },
+        })
+    return results
+
+
 def train_and_evaluate(csv_path, output_dir, seed=42, sample_size=None):
     matrix, labels, steps, eligible_population_count = _prepare_dataset(
         csv_path, sample_size, seed
@@ -351,6 +423,89 @@ def train_and_evaluate(csv_path, output_dir, seed=42, sample_size=None):
     baseline_test_metrics = _threshold_metrics(
         labels[test_idx], scores, baseline_threshold
     )
+    config_path = Path(__file__).resolve().parents[1] / "models" / "hybrid_model_config.json"
+    with config_path.open(encoding="utf-8") as config_file:
+        config = json.load(config_file)
+
+    test_matrix = matrix.iloc[test_idx]
+    rule_scores = _hybrid_rule_scores(
+        test_matrix,
+        config["amount_threshold"],
+    )
+    validation_matrix = matrix.iloc[validation_idx]
+    validation_rule_scores = _hybrid_rule_scores(
+        validation_matrix,
+        config["amount_threshold"],
+    )
+    validation_hybrid_scores = np.clip(
+        config["if_weight"] * validation_scores
+        + config["rule_weight"] * validation_rule_scores,
+        0.0,
+        1.0,
+    )
+    hybrid_scores = np.clip(
+        config["if_weight"] * scores
+        + config["rule_weight"] * rule_scores,
+        0.0,
+        1.0,
+    )
+    hybrid_policy_metrics = {
+        "medium_or_high": {
+            "threshold": float(config["low_threshold"]),
+            **_threshold_metrics(
+                labels[test_idx],
+                hybrid_scores,
+                config["low_threshold"],
+            ),
+        },
+        "high": {
+            "threshold": float(config["medium_threshold"]),
+            **_threshold_metrics(
+                labels[test_idx],
+                hybrid_scores,
+                config["medium_threshold"],
+            ),
+        },
+    }
+    threshold_sensitivity_points = []
+    for candidate in np.arange(
+        config["low_threshold"],
+        0.6501,
+        0.005,
+    ):
+        candidate = round(float(candidate), 3)
+        threshold_sensitivity_points.append(
+            _threshold_metrics(
+                labels[validation_idx],
+                validation_hybrid_scores,
+                candidate,
+            )
+        )
+    hybrid_policy_validation = {
+        "medium_or_high": {
+            "threshold": float(config["low_threshold"]),
+            **_threshold_metrics(
+                labels[validation_idx],
+                validation_hybrid_scores,
+                config["low_threshold"],
+            ),
+        },
+        "high": {
+            "threshold": float(config["medium_threshold"]),
+            **_threshold_metrics(
+                labels[validation_idx],
+                validation_hybrid_scores,
+                config["medium_threshold"],
+            ),
+        },
+    }
+    hybrid_policy_time_windows = _hybrid_policy_time_windows(
+        steps[test_idx],
+        labels[test_idx],
+        hybrid_scores,
+        config["low_threshold"],
+        config["medium_threshold"],
+    )
 
     latency_samples = []
     for row in test_scaled[: min(1000, len(test_scaled))]:
@@ -370,6 +525,7 @@ def train_and_evaluate(csv_path, output_dir, seed=42, sample_size=None):
     metrics = {
         "dataset": Path(csv_path).name,
         "dataset_sha256": dataset_hash,
+        "scikit_learn_version": sklearn.__version__,
         "dataset_rows_used": int(len(labels)),
         "eligible_dataset_rows": int(eligible_population_count),
         "sampled_eligible_rows": int(len(labels)),
@@ -415,6 +571,39 @@ def train_and_evaluate(csv_path, output_dir, seed=42, sample_size=None):
             "training_normal_quantile"
         ],
         "threshold": threshold,
+        "hybrid_policy_holdout": hybrid_policy_metrics,
+        "hybrid_policy_validation": hybrid_policy_validation,
+        "hybrid_policy_time_windows": {
+            "evaluation_type": "retrospective_labeled_holdout_windows",
+            "split": "test",
+            "window_count": len(hybrid_policy_time_windows),
+            "policy_boundaries": {
+                "medium_or_high": float(config["low_threshold"]),
+                "high": float(config["medium_threshold"]),
+            },
+            "warning": (
+                "Offline retrospective PaySim test windows with synthetic "
+                "ground-truth labels. This is not live online model monitoring "
+                "and does not establish real-customer performance."
+            ),
+            "windows": hybrid_policy_time_windows,
+        },
+        "hybrid_threshold_sensitivity": {
+            "split": "validation",
+            "rows": int(len(validation_idx)),
+            "fraud_labels": int(labels[validation_idx].sum()),
+            "cutoff_min": float(config["low_threshold"]),
+            "cutoff_max": 0.65,
+            "step": 0.005,
+            "selection_note": (
+                "Exploratory validation-split trade-off only. Active MEDIUM "
+                "and HIGH cutoffs are selected to reduce false positives "
+                "relative to the prior 0.40 and 0.50 boundaries while showing "
+                "the associated recall trade-off. Final holdout metrics are "
+                "reported separately."
+            ),
+            "points": threshold_sensitivity_points,
+        },
         "roc_auc": float(roc_auc_score(labels[test_idx], scores)),
         "pr_auc": float(average_precision_score(labels[test_idx], scores)),
         "test_fraud_prevalence": float(np.mean(labels[test_idx])),
@@ -436,9 +625,6 @@ def train_and_evaluate(csv_path, output_dir, seed=42, sample_size=None):
     joblib.dump(model, output_dir / "isolation_forest_model.joblib")
     joblib.dump(scaler, output_dir / "robust_scaler.joblib")
     joblib.dump(medians, output_dir / "train_medians.joblib")
-    config_path = Path(__file__).resolve().parents[1] / "models" / "hybrid_model_config.json"
-    with config_path.open(encoding="utf-8") as config_file:
-        config = json.load(config_file)
     config.update(
         {
             "iso_min": min_score,

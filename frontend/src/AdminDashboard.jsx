@@ -107,6 +107,7 @@ async function loadAlerts() {
 
   useEffect(() => {
     loadCases();
+    loadAlerts();
     loadAccounts();
 
     const unsubscribe = subscribeAdminEvents((payload) => {

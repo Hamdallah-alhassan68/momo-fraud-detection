@@ -16,8 +16,8 @@ const CUSTOM_DEVICE_DEFAULT = "CUSTOM-DEVICE-001";
 const SCENARIO_OPTIONS = [
   {
     value: "RECENT_SIM_SWAP",
-    label: "Recent SIM swap signal",
-    hint: "Telecom SIM re-issued within past 48 hours",
+    label: "Simulated recent SIM swap signal",
+    hint: "Inject a recent SIM re-issue flag; no telecom provider is queried.",
   },
   {
     value: "DEVICE_CHANGE",
@@ -38,6 +38,11 @@ const SCENARIO_OPTIONS = [
     value: "FREQUENCY_SPIKE",
     label: "Unusual daily frequency",
     hint: "Daily transaction volume exceeds 2× historical rate",
+  },
+  {
+    value: "AMOUNT_DEVIATION",
+    label: "Amount deviates from usual pattern",
+    hint: "Transaction amount is significantly above the customer's usual amount",
   },
   {
     value: "UNUSUAL_HOUR",
@@ -541,6 +546,18 @@ export default function MomoSimulator() {
                     </button>
                     <button
                       type="button"
+                      className={`scenario-pill ${
+                        scenarios.length === 1 &&
+                        scenarios[0] === "RECENT_SIM_SWAP"
+                          ? "active"
+                          : ""
+                      }`}
+                      onClick={() => setScenarios(["RECENT_SIM_SWAP"])}
+                    >
+                      SIM-swap demo
+                    </button>
+                    <button
+                      type="button"
                       className="scenario-pill-action"
                       onClick={() =>
                         setScenarios(SCENARIO_OPTIONS.map((o) => o.value))
@@ -606,7 +623,9 @@ export default function MomoSimulator() {
                   </div>
 
                   <small className="field-guidance">
-                    Tick one or more signals to model compound risk. You can combine multiple signals (e.g. SIM swap + new device + velocity spike).
+                    These are manually injected synthetic signals, not live
+                    telecom or network checks. Select one to demonstrate its
+                    effect, or combine signals to model compound risk.
                   </small>
                 </fieldset>
 

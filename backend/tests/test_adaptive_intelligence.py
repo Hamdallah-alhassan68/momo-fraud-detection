@@ -11,7 +11,7 @@ import database.database as database
 from services.adaptive_intelligence import (
     _psi,
     build_monitoring,
-    retrain_or_update_model,
+    record_drift_baseline,
 )
 from services.input_validation import (
     is_valid_simulated_recipient,
@@ -63,7 +63,7 @@ class SyntheticScenarioEvaluationTests(unittest.TestCase):
         )
         self.assertEqual(
             result["summary"]["expected_risk_level_counts"],
-            {"LOW": 2, "MEDIUM": 10, "HIGH": 1},
+            {"LOW": 3, "MEDIUM": 9, "HIGH": 1},
         )
         for scenario in result["scenarios"]:
             self.assertGreaterEqual(scenario["mean_scoring_latency_ms"], 0)
@@ -82,6 +82,49 @@ class SyntheticScenarioEvaluationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "at least 1"):
             evaluate_synthetic_scenarios(runs=0)
+
+
+class HybridPolicyTimeWindowTests(unittest.TestCase):
+    def test_windows_keep_steps_ordered_and_report_known_labels(self):
+        from scripts.train_evaluate import _hybrid_policy_time_windows
+
+        result = _hybrid_policy_time_windows(
+            steps=np.arange(1, 9),
+            labels=np.array([0, 1, 0, 1, 0, 1, 0, 1]),
+            scores=np.array([0.1, 0.5, 0.2, 0.8, 0.1, 0.6, 0.2, 0.9]),
+            medium_boundary=0.45,
+            high_boundary=0.525,
+        )
+
+        self.assertEqual(len(result), 4)
+        self.assertEqual(
+            [(window["step_min"], window["step_max"]) for window in result],
+            [(1, 2), (3, 4), (5, 6), (7, 8)],
+        )
+        self.assertTrue(all(window["rows"] == 2 for window in result))
+        self.assertTrue(all(window["fraud_labels"] == 1 for window in result))
+        self.assertEqual(result[0]["medium_or_high"]["true_positive_count"], 1)
+        self.assertEqual(result[1]["high"]["true_positive_count"], 1)
+        self.assertEqual(
+            [window["cumulative"]["rows"] for window in result],
+            [2, 4, 6, 8],
+        )
+        self.assertEqual(
+            [window["cumulative"]["fraud_labels"] for window in result],
+            [1, 2, 3, 4],
+        )
+        self.assertEqual(
+            result[-1]["cumulative"]["medium_or_high"]["true_positive_count"],
+            4,
+        )
+
+    def test_windows_validate_inputs(self):
+        from scripts.train_evaluate import _hybrid_policy_time_windows
+
+        with self.assertRaisesRegex(ValueError, "window_count"):
+            _hybrid_policy_time_windows([], [], [], 0.45, 0.525, 0)
+        with self.assertRaisesRegex(ValueError, "equal lengths"):
+            _hybrid_policy_time_windows([1], [0, 1], [0.5], 0.45, 0.525)
 
 
 class ApiScoringBenchmarkTests(unittest.TestCase):
@@ -480,6 +523,117 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
             }
         )
 
+    def test_simulator_starts_all_demo_accounts_with_doubled_balances(self):
+        from services import momo_simulator
+
+        customers = {
+            customer["ref"]: customer
+            for customer in momo_simulator.get_customers()
+        }
+        self.assertEqual(customers["WALLET-1001"]["balance"], 5000.0)
+        self.assertEqual(customers["WALLET-1002"]["balance"], 11600.0)
+        self.assertEqual(customers["WALLET-1003"]["balance"], 2400.0)
+        self.assertEqual(
+            {
+                recipient["ref"]: recipient["balance"]
+                for recipient in customers["WALLET-1001"]["recipients"]
+            },
+            {
+                "WALLET-2001": 1600.0,
+                "MERCHANT-5001": 8400.0,
+                "WALLET-2003": 700.0,
+            },
+        )
+        self.assertEqual(
+            momo_simulator.BALANCES["BANK-ACC-7001"],
+            200000.0,
+        )
+
+    def test_resolved_analyst_outcomes_are_returned_as_a_daily_trend(self):
+        for index, decision in enumerate(
+            ("FRAUD_CONFIRMED", "LEGITIMATE", "INCONCLUSIVE")
+        ):
+            transaction_id = database.create_transaction(
+                {
+                    "transaction_reference": f"OUTCOME-{index}",
+                    "amount": 25,
+                    "transaction_type": "TRANSFER",
+                    "origin_account": "WALLET-1001",
+                    "destination_account": f"WALLET-200{index}",
+                }
+            )
+            case_id = database.create_fraud_case(transaction_id)
+            database.update_fraud_case(
+                case_id,
+                {
+                    "analyst_decision": decision,
+                    "case_status": "RESOLVED",
+                },
+            )
+
+        trend = database.get_resolved_analyst_outcome_trend(days=14)
+
+        self.assertEqual(len(trend), 1)
+        self.assertEqual(trend[0]["confirmed"], 1)
+        self.assertEqual(trend[0]["legitimate"], 1)
+        self.assertEqual(trend[0]["inconclusive"], 1)
+
+    def test_runtime_model_reports_pay_sim_holdout_provenance(self):
+        from services.adaptive_intelligence import _get_runtime_model_evaluation
+
+        evaluation = _get_runtime_model_evaluation()
+
+        self.assertEqual(evaluation["dataset"], "paysim.csv")
+        self.assertEqual(
+            evaluation["dataset_sha256"],
+            "16910f90577b0d981bf8ff289714510bb89bc71bff7d3f220f024e287e4eea6b",
+        )
+        self.assertEqual(evaluation["scikit_learn_version"], "1.6.1")
+        self.assertEqual(evaluation["sampled_rows"], 300000)
+        self.assertEqual(evaluation["test_rows"], 59850)
+        self.assertEqual(evaluation["active_medium_boundary"], 0.45)
+        self.assertEqual(evaluation["active_high_boundary"], 0.525)
+        seed_sensitivity = evaluation["hybrid_seed_sensitivity"]
+        self.assertEqual(seed_sensitivity["seeds"], [42, 7, 21, 99])
+        self.assertEqual(
+            seed_sensitivity["policy_boundaries"],
+            {"medium_or_high": 0.45, "high": 0.525},
+        )
+        self.assertLess(
+            seed_sensitivity["medium_or_high"]["false_positive_rate"]["min"],
+            seed_sensitivity["medium_or_high"]["false_positive_rate"]["max"],
+        )
+        self.assertEqual(
+            evaluation["hybrid_high"]["threshold"],
+            evaluation["active_high_boundary"],
+        )
+        sensitivity = evaluation["hybrid_threshold_sensitivity"]
+        self.assertEqual(sensitivity["split"], "validation")
+        self.assertEqual(len(sensitivity["points"]), 41)
+        self.assertEqual(sensitivity["points"][0]["threshold"], 0.45)
+        self.assertEqual(sensitivity["points"][-1]["threshold"], 0.65)
+        policy_validation = evaluation["hybrid_policy_validation"]
+        self.assertEqual(policy_validation["medium_or_high"]["threshold"], 0.45)
+        self.assertEqual(policy_validation["high"]["threshold"], 0.525)
+        time_windows = evaluation["hybrid_policy_time_windows"]
+        self.assertEqual(
+            time_windows["evaluation_type"],
+            "retrospective_labeled_holdout_windows",
+        )
+        self.assertEqual(time_windows["split"], "test")
+        self.assertEqual(len(time_windows["windows"]), 4)
+        self.assertIn("not live online", time_windows["warning"])
+        cumulative_counts = [
+            window["cumulative"]["rows"]
+            for window in time_windows["windows"]
+        ]
+        self.assertEqual(cumulative_counts, sorted(cumulative_counts))
+        self.assertEqual(cumulative_counts[-1], evaluation["test_rows"])
+        flagged_counts = [
+            point["flagged_count"] for point in sensitivity["points"]
+        ]
+        self.assertEqual(flagged_counts, sorted(flagged_counts, reverse=True))
+
     def test_recipient_history_is_specific_to_customer(self):
         self._insert("PROFILE-1", "WALLET-2001", "2026-04-02T12:00:00+00:00")
         self._insert("PROFILE-2", "WALLET-2001", "2026-04-02T13:00:00+00:00")
@@ -560,17 +714,28 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
             transaction_type="TRANSFER",
             amount=25,
             recipient="WALLET-2001",
-            scenario=["DEVICE_CHANGE", "IP_MISMATCH", "RECENT_SIM_SWAP"],
+            scenario=[
+                "DEVICE_CHANGE",
+                "IP_MISMATCH",
+                "RECENT_SIM_SWAP",
+                "AMOUNT_DEVIATION",
+            ],
         )
 
         # Stored in a deterministic order and exposed as a list.
         stored = database.get_momo_session(session["session_id"])
         self.assertEqual(
-            stored["scenario"], "RECENT_SIM_SWAP,DEVICE_CHANGE,IP_MISMATCH"
+            stored["scenario"],
+            "RECENT_SIM_SWAP,DEVICE_CHANGE,IP_MISMATCH,AMOUNT_DEVIATION",
         )
         self.assertEqual(
             session["scenarios"],
-            ["RECENT_SIM_SWAP", "DEVICE_CHANGE", "IP_MISMATCH"],
+            [
+                "RECENT_SIM_SWAP",
+                "DEVICE_CHANGE",
+                "IP_MISMATCH",
+                "AMOUNT_DEVIATION",
+            ],
         )
 
         try:
@@ -578,9 +743,15 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
             self.assertTrue(result["signals"]["recent_sim_swap"])
             self.assertTrue(result["signals"]["device_change"])
             self.assertTrue(result["signals"]["ip_network_mismatch"])
+            self.assertTrue(result["signals"]["amount_deviation"])
             self.assertEqual(
                 result["signals"]["scenarios"],
-                ["RECENT_SIM_SWAP", "DEVICE_CHANGE", "IP_MISMATCH"],
+                [
+                    "RECENT_SIM_SWAP",
+                    "DEVICE_CHANGE",
+                    "IP_MISMATCH",
+                    "AMOUNT_DEVIATION",
+                ],
             )
         finally:
             momo_simulator.FROZEN_UNTIL.pop("WALLET-1001", None)
@@ -912,7 +1083,7 @@ class FastApiAdminAccountControlTests(unittest.TestCase):
 
 
 class FastApiModelRetrainEndpointTests(unittest.TestCase):
-    def test_admin_model_retrain_endpoint_via_http(self):
+    def test_admin_drift_baseline_endpoint_via_http(self):
         import asyncio
         import httpx
         import os
@@ -921,11 +1092,11 @@ class FastApiModelRetrainEndpointTests(unittest.TestCase):
         previous_database_path = database.DATABASE_PATH
         previous_admin_token = os.environ.get("MOMO_ADMIN_TOKEN")
         temp_dir = tempfile.TemporaryDirectory()
-        database.DATABASE_PATH = Path(temp_dir.name) / "model-retrain.sqlite3"
+        database.DATABASE_PATH = Path(temp_dir.name) / "model-baseline.sqlite3"
         database.initialize_database()
         os.environ["MOMO_ADMIN_TOKEN"] = "model-retrain-endpoint-token-123456"
 
-        async def check_retrain_endpoint():
+        async def check_baseline_endpoint():
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(
                 transport=transport, base_url="http://test"
@@ -936,53 +1107,41 @@ class FastApiModelRetrainEndpointTests(unittest.TestCase):
                 denied = await client.post("/api/admin/model/retrain")
                 self.assertEqual(denied.status_code, 401)
 
-                # Admin can record a prototype baseline marker over HTTP.
+                # Admin can capture a drift reference over HTTP.
                 response = await client.post(
-                    "/api/admin/model/retrain",
+                    "/api/admin/model/baseline",
                     headers=headers,
                     json={"triggered_by": "dashboard"},
                 )
                 self.assertEqual(response.status_code, 200)
                 payload = response.json()
                 self.assertEqual(payload["status"], "SUCCESS")
-                self.assertTrue(payload["version"].startswith("V3."))
-                self.assertIn("ADAPTIVE", payload["version"])
-                self.assertIsInstance(payload["trained_on_samples"], int)
-                self.assertEqual(payload["operation"], "PROTOTYPE_BASELINE_MARKER")
+                self.assertEqual(payload["operation"], "DRIFT_BASELINE_CAPTURE")
                 self.assertFalse(payload["model_refit"])
-                self.assertFalse(payload["psi_baseline_reset"])
-                self.assertEqual(
-                    payload["tracked_transactions"],
-                    payload["trained_on_samples"],
-                )
-                self.assertIn("detector was not refit", payload["message"])
+                self.assertTrue(payload["psi_baseline_reset"])
+                self.assertEqual(payload["tracked_transactions"], 0)
+                self.assertEqual(payload["sample_count"], 0)
+                self.assertIn("no detector refit occurred", payload["message"])
 
-                # A version record is persisted without claiming model metrics.
+                # Baseline capture does not fabricate a model version.
                 latest = database.get_latest_model_version()
-                self.assertEqual(latest["version"], payload["version"])
-                self.assertEqual(latest["status"], "ACTIVE")
-                self.assertEqual(latest["model_type"], "PrototypeBaselineMarker")
-                for metric in (
-                    "roc_auc",
-                    "pr_auc",
-                    "precision_score",
-                    "recall_score",
-                    "f1_score",
-                ):
-                    self.assertIsNone(latest[metric], metric)
+                self.assertIsNone(latest)
+                baseline = database.get_model_drift_baseline()
+                self.assertEqual(baseline["transaction_count"], 0)
+                self.assertEqual(baseline["recorded_by"], "admin_master:dashboard")
 
                 # Audit entry logged with operator attribution
                 audit_logs = database.get_audit_logs()
                 retrain_entries = [
                     log
                     for log in audit_logs
-                    if log["action"] == "MODEL_BASELINE_MARKER_RECORDED"
+                    if log["action"] == "MODEL_DRIFT_BASELINE_RECORDED"
                 ]
                 self.assertGreater(len(retrain_entries), 0)
                 self.assertIn("admin_master", retrain_entries[0]["performed_by"])
-                self.assertIn("detector was not refit", retrain_entries[0]["details"])
+                self.assertIn("was not refit or versioned", retrain_entries[0]["details"])
 
-                # Monitoring exposes the automated baseline-marker thresholds.
+                # Monitoring exposes the baseline-capture thresholds.
                 monitoring = await client.get(
                     "/api/admin/monitoring", headers=headers
                 )
@@ -992,11 +1151,11 @@ class FastApiModelRetrainEndpointTests(unittest.TestCase):
                 self.assertEqual(trigger["volume_threshold"], 50)
                 self.assertIn(
                     trigger["recommended_action"],
-                    ("RECORD_PROTOTYPE_BASELINE_MARKER", "MONITOR_STABLE"),
+                    ("RECORD_DRIFT_BASELINE", "MONITOR_STABLE"),
                 )
 
         try:
-            asyncio.run(check_retrain_endpoint())
+            asyncio.run(check_baseline_endpoint())
         finally:
             database.DATABASE_PATH = previous_database_path
             temp_dir.cleanup()
@@ -1280,6 +1439,19 @@ class PaySimTrainingPipelineTests(unittest.TestCase):
                 split_counts["test"]["fraud_labels"], 0
             )
             self.assertFalse(metrics["runtime_model_modified"])
+            self.assertEqual(
+                metrics["hybrid_policy_holdout"]["medium_or_high"]["threshold"],
+                0.45,
+            )
+            self.assertEqual(
+                metrics["hybrid_policy_holdout"]["high"]["threshold"],
+                0.525,
+            )
+            time_windows = metrics["hybrid_policy_time_windows"]
+            self.assertEqual(len(time_windows["windows"]), 4)
+            self.assertTrue(
+                all(window["rows"] > 0 for window in time_windows["windows"])
+            )
             threshold_selection = metrics["threshold_selection"]
             self.assertIn("F2", threshold_selection["policy"])
             self.assertIn(
@@ -1308,7 +1480,14 @@ class PaySimTrainingPipelineTests(unittest.TestCase):
             self.assertTrue((output_dir / "train_medians.joblib").exists())
             self.assertTrue((output_dir / "evaluation.json").exists())
             comparison = evaluate_run(
-                csv_path, output_dir, sample_size=120, seed=17
+                csv_path,
+                output_dir,
+                sample_size=120,
+                seed=17,
+                policy_boundaries={
+                    "medium_or_high": 0.42,
+                    "high": 0.61,
+                },
             )
             self.assertEqual(comparison["sampled_eligible_rows"], 120)
             self.assertEqual(
@@ -1316,6 +1495,14 @@ class PaySimTrainingPipelineTests(unittest.TestCase):
                 24,
             )
             self.assertFalse(comparison.get("runtime_model_modified", False))
+            self.assertEqual(
+                comparison["runtime_rule_configuration"]["low_threshold"],
+                0.42,
+            )
+            self.assertEqual(
+                comparison["runtime_rule_configuration"]["medium_threshold"],
+                0.61,
+            )
             self.assertIn(
                 "TRANSFER",
                 comparison["test_comparison"][
@@ -1337,44 +1524,57 @@ class CustomInputsAndRetrainingTests(unittest.TestCase):
         database.DATABASE_PATH = self.original_database_path
         self.temp_dir.cleanup()
 
-    def test_admin_model_retrain_lifecycle(self):
-        res = retrain_or_update_model(triggered_by="TEST_ADMIN")
+    def test_admin_drift_baseline_capture_lifecycle(self):
+        transaction_id = database.create_transaction(
+            {
+                "transaction_reference": "BASELINE-TRANSACTION-1",
+                "amount": 25.0,
+                "transaction_type": "TRANSFER",
+                "origin_account": "WALLET-TEST",
+                "destination_account": "WALLET-DEST",
+            }
+        )
+        database.create_risk_assessment(
+            transaction_id,
+            {
+                "risk_score": 0.2,
+                "risk_level": "LOW",
+                "decision": "APPROVE",
+                "isolation_forest_score": 0.1,
+                "rule_score": 0.05,
+                "reasons": [],
+            },
+        )
+        res = record_drift_baseline(triggered_by="TEST_ADMIN")
         self.assertEqual(res["status"], "SUCCESS")
-        self.assertTrue(res["version"].startswith("V3."))
-        self.assertIn("ADAPTIVE", res["version"])
-        self.assertIsInstance(res["trained_on_samples"], int)
-        self.assertGreaterEqual(res["trained_on_samples"], 0)
+        self.assertEqual(res["operation"], "DRIFT_BASELINE_CAPTURE")
+        self.assertIsInstance(res["sample_count"], int)
+        self.assertGreaterEqual(res["sample_count"], 0)
+        self.assertTrue(res["psi_baseline_reset"])
 
         latest = database.get_latest_model_version()
-        self.assertIsNotNone(latest)
-        self.assertEqual(latest["version"], res["version"])
-        self.assertEqual(latest["status"], "ACTIVE")
-        self.assertEqual(latest["samples_count"], res["trained_on_samples"])
+        self.assertIsNone(latest)
+        baseline = database.get_model_drift_baseline()
+        self.assertEqual(baseline["recorded_by"], "TEST_ADMIN")
+        self.assertEqual(baseline["transaction_count"], res["tracked_transactions"])
 
-        # Verify audit entry was logged
         audit_logs = database.get_audit_logs()
-        retrain_entries = [
+        baseline_entries = [
             log for log in audit_logs
-            if log["action"] == "MODEL_BASELINE_MARKER_RECORDED"
+            if log["action"] == "MODEL_DRIFT_BASELINE_RECORDED"
         ]
-        self.assertGreater(len(retrain_entries), 0)
-        self.assertIn("TEST_ADMIN", retrain_entries[0]["performed_by"])
-        self.assertIn("PSI baseline was not reset", retrain_entries[0]["details"])
+        self.assertGreater(len(baseline_entries), 0)
+        self.assertIn("TEST_ADMIN", baseline_entries[0]["performed_by"])
+        self.assertIn("was not refit or versioned", baseline_entries[0]["details"])
         self.assertFalse(res["model_refit"])
-        self.assertFalse(res["psi_baseline_reset"])
-        for metric in (
-            "roc_auc",
-            "pr_auc",
-            "precision_score",
-            "recall_score",
-            "f1_score",
-        ):
-            self.assertIsNone(latest[metric], metric)
+        self.assertEqual(
+            baseline["samples"],
+            {"amount": [25.0], "risk_score": [0.2]},
+        )
 
-    def test_retrain_rollover_increments_beyond_v3_major(self):
-        # Seed an active V4.x version, as repeated retrains eventually produce.
+    def test_drift_baseline_capture_preserves_active_model_version(self):
         database.record_model_version(
-            version="V4.0-ADAPTIVE",
+            version="V4.0-IF",
             model_type="IsolationForest+RuleHybrid",
             roc_auc=0.98,
             pr_auc=0.89,
@@ -1384,12 +1584,10 @@ class CustomInputsAndRetrainingTests(unittest.TestCase):
             status="ACTIVE",
             samples_count=120,
         )
-        result = retrain_or_update_model(triggered_by="TEST_ADMIN")
+        result = record_drift_baseline(triggered_by="TEST_ADMIN")
         self.assertEqual(result["status"], "SUCCESS")
-        # Must roll forward to V4.1-ADAPTIVE, not reset to V3.1-ADAPTIVE
-        # (a reset would violate the model_versions.version unique constraint).
-        self.assertTrue(result["version"].startswith("V4."))
-        self.assertNotEqual(result["version"], "V3.1-ADAPTIVE")
+        self.assertEqual(result["active_model_version"], "V4.0-IF")
+        self.assertEqual(database.get_latest_model_version()["version"], "V4.0-IF")
 
     def test_custom_ghana_phone_number_formats_and_custom_wallets(self):
         known = ["DEMO-RECIPIENT-01", "MERCHANT-01"]
@@ -1476,11 +1674,23 @@ class CustomInputsAndRetrainingTests(unittest.TestCase):
         trained_samples,
         samples=None,
         psi_value=None,
+        baseline=None,
     ):
         latest_model = {
             "version": "V3.0-HYBRID",
             "samples_count": trained_samples,
         }
+        psi_patch = (
+            patch(
+                "services.adaptive_intelligence._psi",
+                return_value=psi_value,
+            )
+            if psi_value is not None
+            else patch(
+                "services.adaptive_intelligence._psi",
+                wraps=_psi,
+            )
+        )
         with (
             patch(
                 "services.adaptive_intelligence.get_daily_transaction_stats",
@@ -1493,6 +1703,14 @@ class CustomInputsAndRetrainingTests(unittest.TestCase):
             patch(
                 "services.adaptive_intelligence.get_analyst_decision_counts",
                 return_value={},
+            ),
+            patch(
+                "services.adaptive_intelligence.get_resolved_analyst_outcome_trend",
+                return_value=[],
+            ),
+            patch(
+                "services.adaptive_intelligence.get_model_drift_baseline",
+                return_value=baseline,
             ),
             patch(
                 "services.adaptive_intelligence.record_model_monitoring_snapshot"
@@ -1513,14 +1731,88 @@ class CustomInputsAndRetrainingTests(unittest.TestCase):
                 "services.adaptive_intelligence.compute_flag_rates",
                 return_value={"tracked": tracked},
             ),
-            patch(
-                "services.adaptive_intelligence._psi",
-                return_value=psi_value,
-            ),
+            psi_patch,
         ):
             return build_monitoring()
 
-    def test_automated_volume_trigger_activates_at_50_new_transactions(self):
+    def test_drift_compares_new_transactions_to_captured_baseline(self):
+        baseline_time = "2026-10-16T12:00:00+00:00"
+        samples = [
+            {
+                "amount": 1000.0 + index,
+                "risk_score": 0.9,
+                "created_at": "2026-10-17T12:00:00+00:00",
+            }
+            for index in range(20)
+        ]
+        baseline = {
+            "samples": {
+                "amount": [10.0 + index for index in range(20)],
+                "risk_score": [0.1 + index / 100 for index in range(20)],
+            },
+            "transaction_count": 100,
+            "recorded_by": "TEST_ADMIN",
+            "recorded_at": baseline_time,
+        }
+
+        monitoring = self._build_monitoring_with_mocks(
+            tracked=125,
+            trained_samples=100,
+            samples=samples,
+            baseline=baseline,
+        )
+
+        drift_by_feature = {
+            item["feature"]: item for item in monitoring["drift"]
+        }
+        self.assertEqual(
+            drift_by_feature["Transaction amount"]["status"],
+            "critical",
+        )
+        self.assertEqual(
+            drift_by_feature["Risk score distribution"]["status"],
+            "critical",
+        )
+        self.assertEqual(
+            monitoring["drift_baseline"]["recorded_at"],
+            baseline_time,
+        )
+        self.assertEqual(
+            monitoring["automated_trigger"]["new_transactions_since_baseline"],
+            25,
+        )
+
+    def test_drift_is_insufficient_until_ten_post_baseline_samples(self):
+        baseline = {
+            "samples": {"amount": [10.0] * 20, "risk_score": [0.1] * 20},
+            "transaction_count": 20,
+            "recorded_by": "TEST_ADMIN",
+            "recorded_at": "2026-10-16T12:00:00+00:00",
+        }
+        samples = [
+            {
+                "amount": 100.0,
+                "risk_score": 0.9,
+                "created_at": "2026-10-17T12:00:00+00:00",
+            }
+            for _ in range(9)
+        ]
+
+        monitoring = self._build_monitoring_with_mocks(
+            tracked=29,
+            trained_samples=20,
+            samples=samples,
+            baseline=baseline,
+        )
+
+        self.assertTrue(
+            all(
+                item["status"] == "insufficient_data"
+                for item in monitoring["drift"]
+            )
+        )
+
+    def test_automated_volume_trigger_recommends_baseline_capture(self):
         for new_transactions, expected in ((49, False), (50, True)):
             with self.subTest(new_transactions=new_transactions):
                 monitoring = self._build_monitoring_with_mocks(
@@ -1528,13 +1820,16 @@ class CustomInputsAndRetrainingTests(unittest.TestCase):
                     trained_samples=100,
                 )
                 trigger = monitoring["automated_trigger"]
-                self.assertEqual(trigger["new_transactions_since_retrain"], new_transactions)
+                self.assertEqual(
+                    trigger["new_transactions_since_baseline"],
+                    new_transactions,
+                )
                 self.assertEqual(trigger["volume_breach"], expected)
                 self.assertEqual(trigger["action_required"], expected)
                 self.assertEqual(
                     trigger["recommended_action"],
                     (
-                        "RECORD_PROTOTYPE_BASELINE_MARKER"
+                        "RECORD_DRIFT_BASELINE"
                         if expected
                         else "MONITOR_STABLE"
                     ),
@@ -1556,14 +1851,14 @@ class CustomInputsAndRetrainingTests(unittest.TestCase):
         self.assertTrue(trigger["action_required"])
         self.assertEqual(
             trigger["recommended_action"],
-            "RECORD_PROTOTYPE_BASELINE_MARKER",
+            "RECORD_DRIFT_BASELINE",
         )
 
     def test_custom_wallet_auto_provisioning_in_momo_simulator(self):
         custom_ref = "0248889900"
         customer = _ensure_customer(custom_ref)
         self.assertEqual(customer["ref"], custom_ref)
-        self.assertEqual(customer["balance"], 5000.0)
+        self.assertEqual(customer["balance"], 10000.0)
         self.assertEqual(customer["pin"], "0000")
 
         # Test initiating a transaction with this custom wallet
@@ -1592,12 +1887,12 @@ class CustomInputsAndRetrainingTests(unittest.TestCase):
         self.assertIsInstance(trigger["action_required"], bool)
         self.assertIsInstance(trigger["psi_critical_breach"], bool)
         self.assertIsInstance(trigger["volume_breach"], bool)
-        self.assertIsInstance(trigger["new_transactions_since_retrain"], int)
+        self.assertIsInstance(trigger["new_transactions_since_baseline"], int)
         self.assertIsInstance(trigger["reasons"], list)
         self.assertTrue(trigger["auto_executable"])
         self.assertIn(
             trigger["recommended_action"],
-            ("RECORD_PROTOTYPE_BASELINE_MARKER", "MONITOR_STABLE"),
+            ("RECORD_DRIFT_BASELINE", "MONITOR_STABLE"),
         )
 
 

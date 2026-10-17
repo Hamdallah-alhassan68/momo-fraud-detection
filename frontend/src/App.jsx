@@ -279,7 +279,7 @@ function App() {
                   </p>
                   <div className="story-footnote">
                     <span className="story-line" />
-                    <span>Bank of Ghana FinTech Architecture · Production-Ready Controls</span>
+                    <span>Bank of Ghana FinTech Architecture · Prototype Risk Controls</span>
                   </div>
                 </div>
               </section>

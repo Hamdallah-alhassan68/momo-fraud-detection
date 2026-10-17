@@ -14,6 +14,7 @@ from pathlib import Path
 
 import joblib
 import numpy as np
+import sklearn
 from sklearn.metrics import average_precision_score, roc_auc_score
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -188,7 +189,13 @@ def _summarize_runs(runs):
     return summary
 
 
-def evaluate_run(dataset_path, model_directory, sample_size=None, seed=42):
+def evaluate_run(
+    dataset_path,
+    model_directory,
+    sample_size=None,
+    seed=42,
+    policy_boundaries=None,
+):
     matrix, labels, steps, eligible_count = _prepare_dataset(
         dataset_path, sample_size, seed
     )
@@ -213,6 +220,20 @@ def evaluate_run(dataset_path, model_directory, sample_size=None, seed=42):
             encoding="utf-8"
         )
     )
+    if policy_boundaries is None:
+        policy_boundaries = {
+            "medium_or_high": float(config["low_threshold"]),
+            "high": float(config["medium_threshold"]),
+        }
+    medium_or_high_boundary = float(policy_boundaries["medium_or_high"])
+    high_boundary = float(policy_boundaries["high"])
+    if not (
+        0 <= medium_or_high_boundary < high_boundary <= 1
+    ):
+        raise ValueError(
+            "Policy boundaries must satisfy "
+            "0 <= medium_or_high < high <= 1."
+        )
 
     prepared = matrix.fillna(medians)
     scaled = scaler.transform(prepared)
@@ -228,7 +249,7 @@ def evaluate_run(dataset_path, model_directory, sample_size=None, seed=42):
     gc.collect()
 
     rule_scores = _calculate_rule_scores(matrix, config["amount_threshold"])
-    step_up_signal = matrix["recipient_novel"].to_numpy() != 0
+    step_up_signal = np.zeros(len(matrix), dtype=bool)
     hybrid_scores = _combine_hybrid_scores(
         iso_scores, rule_scores, step_up_signal, config
     )
@@ -250,8 +271,8 @@ def evaluate_run(dataset_path, model_directory, sample_size=None, seed=42):
     hybrid_test = _threshold_metrics(
         labels[test_idx], hybrid_scores[test_idx], hybrid_selected["threshold"]
     )
-    production_cutoff = float(config["medium_threshold"])
-    step_up_cutoff = float(config["low_threshold"])
+    production_cutoff = high_boundary
+    step_up_cutoff = medium_or_high_boundary
     model_only_low_cutoff_test = _threshold_metrics(
         labels[test_idx], iso_scores[test_idx], step_up_cutoff
     )
@@ -277,6 +298,7 @@ def evaluate_run(dataset_path, model_directory, sample_size=None, seed=42):
 
     result = {
         "seed": int(seed),
+        "evaluation_scikit_learn_version": sklearn.__version__,
         "model_artifact_directory": str(model_directory.name),
         "sampled_eligible_rows": int(len(labels)),
         "eligible_population_rows": int(eligible_count),
@@ -288,7 +310,7 @@ def evaluate_run(dataset_path, model_directory, sample_size=None, seed=42):
         "runtime_rule_configuration": {
             "if_weight": float(config["if_weight"]),
             "rule_weight": float(config["rule_weight"]),
-            "low_threshold": float(config["low_threshold"]),
+            "low_threshold": step_up_cutoff,
             "medium_threshold": production_cutoff,
             "amount_threshold": float(config["amount_threshold"]),
         },
@@ -460,7 +482,7 @@ def evaluate_run(dataset_path, model_directory, sample_size=None, seed=42):
             "Synthetic PaySim labels and synthetic transaction features only.",
             "Device, IP, SIM-swap, customer-deviation, unusual-hour, velocity, and frequency signals are absent and are not simulated as positive.",
             "Recipient history is derived only from sampled prior steps, which may differ from full production history.",
-            "Each seed uses a model fitted on that seed's earlier training period; this does not independently validate the shipped model.",
+            "Each seed uses a model fitted on that seed's earlier training period; this is not an evaluation of the current runtime artifacts.",
             "Wilson confidence intervals describe per-test-set proportions only and do not account for temporal clustering or seed variation.",
             "Runtime model artifacts and thresholds are unchanged.",
         ],
@@ -480,11 +502,32 @@ def main():
         help="Directory containing temporal run subdirectories",
     )
     parser.add_argument(
+        "--policy-config",
+        type=Path,
+        default=Path("models/hybrid_model_config.json"),
+        help="Config supplying the fixed deployed policy boundaries",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
-        default=Path("reports/synthetic-paysim-hybrid-comparison.json"),
+        default=Path("reports/hybrid-policy-seed-stability.json"),
     )
     args = parser.parse_args()
+    policy_config = json.loads(args.policy_config.read_text(encoding="utf-8"))
+    policy_boundaries = {
+        "medium_or_high": float(policy_config["low_threshold"]),
+        "high": float(policy_config["medium_threshold"]),
+    }
+    if not (
+        0 <= policy_boundaries["medium_or_high"]
+        < policy_boundaries["high"]
+        <= 1
+    ):
+        parser.error(
+            "Policy config boundaries must satisfy "
+            "0 <= low_threshold < medium_threshold <= 1."
+        )
+
     runs = []
     for seed in args.seeds:
         run_name = (
@@ -498,6 +541,7 @@ def main():
                 args.models_dir / run_name,
                 sample_size=args.sample_size,
                 seed=seed,
+                policy_boundaries=policy_boundaries,
             )
         )
         gc.collect()
@@ -506,22 +550,29 @@ def main():
         "evaluation_type": "hybrid_vs_model_only_temporal_test",
         "dataset": args.dataset.name,
         "dataset_sha256": _sha256_file(args.dataset),
+        "evaluation_scikit_learn_version": sklearn.__version__,
         "sample_size_per_seed": args.sample_size,
         "seeds": list(args.seeds),
         "split_policy": (
             "Chronological 60/20/20 by step; complete steps stay in one split; "
             "thresholds selected on validation only."
         ),
+        "fixed_runtime_policy_boundaries": policy_boundaries,
+        "seed_stability_warning": (
+            "Each run retrains a separate Isolation Forest on a different "
+            "seeded sample. This is policy sensitivity evidence, not a repeated "
+            "evaluation of the exact deployed model artifact."
+        ),
         "score_definitions": {
             "model_only": "Normalized Isolation Forest anomaly score.",
             "hybrid": (
-                "Configured Isolation Forest/rule weighted score, clipped and "
-                "with the production minimum-score floor for novel recipients."
+                "Configured Isolation Forest/rule weighted score, clipped. "
+                "Signals absent from PaySim are not simulated in this evaluation."
             ),
             "production_policy": (
-                "The configured low boundary (0.3) marks MEDIUM-or-HIGH and "
-                "the medium boundary (0.5) marks HIGH; both are diagnostics, "
-                "not approvals to deploy or recalibrate."
+                "The configured low boundary marks MEDIUM-or-HIGH and the "
+                "medium boundary marks HIGH; both are diagnostics, not "
+                "approvals to deploy or recalibrate."
             ),
         },
         "runs": runs,

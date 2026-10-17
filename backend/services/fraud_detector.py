@@ -128,7 +128,7 @@ class FraudDetector:
         )
 
         print(
-            f"Risk threshold: "
+            f"Isolation Forest evaluation threshold (not a hybrid risk tier): "
             f"{self.risk_threshold:.4f}"
         )
 
@@ -495,7 +495,7 @@ class FraudDetector:
                 "amount_deviation",
                 "unusual_hour",
             )
-        ) or bool(features["recipient_novel"])
+        )
         if step_up_signal:
             hybrid_score = max(hybrid_score, self.low_threshold)
 

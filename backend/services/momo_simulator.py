@@ -54,7 +54,7 @@ CUSTOMERS = [
         "phone": "0241001001",
         "email": "kwame.mensah@example.test",
         "email_verified": True,
-        "balance": 2500.0,
+        "balance": 5000.0,
         "pin": "2233",
         "base_ip": "192.168.1.22",
         "devices": ["MOBILE-AND-001", "MOBILE-AND-002"],
@@ -65,7 +65,7 @@ CUSTOMERS = [
         "phone": "0242002002",
         "email": "ama.serwaa@example.test",
         "email_verified": True,
-        "balance": 5800.0,
+        "balance": 11600.0,
         "pin": "7788",
         "base_ip": "197.210.120.45",
         "devices": ["APPLE-IOS-013"],
@@ -76,7 +76,7 @@ CUSTOMERS = [
         "phone": "0243003003",
         "email": "yaw.boateng@example.test",
         "email_verified": True,
-        "balance": 1200.0,
+        "balance": 2400.0,
         "pin": "9911",
         "base_ip": "41.220.77.21",
         "devices": ["MOBILE-AND-005", "MOBILE-AND-006"],
@@ -84,15 +84,15 @@ CUSTOMERS = [
 ]
 
 RECIPIENTS = [
-    {"ref": "WALLET-2001", "name": "Abena Ofori", "balance": 800.0},
-    {"ref": "MERCHANT-5001", "name": "Melcom Online Store", "balance": 4200.0},
-    {"ref": "WALLET-2003", "name": "Kojo Antwi", "balance": 350.0},
+    {"ref": "WALLET-2001", "name": "Abena Ofori", "balance": 1600.0},
+    {"ref": "MERCHANT-5001", "name": "Melcom Online Store", "balance": 8400.0},
+    {"ref": "WALLET-2003", "name": "Kojo Antwi", "balance": 700.0},
 ]
 
 BANK_ACCOUNT = {
     "ref": "BANK-ACC-7001",
     "name": "GCB Bank (Demo)",
-    "balance": 100000.0,
+    "balance": 200000.0,
 }
 
 TRANSACTION_TYPES = {
@@ -120,6 +120,7 @@ SIMULATION_SCENARIOS = {
     "IP_MISMATCH",
     "VELOCITY_SPIKE",
     "FREQUENCY_SPIKE",
+    "AMOUNT_DEVIATION",
     "UNUSUAL_HOUR",
 }
 
@@ -132,6 +133,7 @@ SCENARIO_ORDER = [
     "IP_MISMATCH",
     "VELOCITY_SPIKE",
     "FREQUENCY_SPIKE",
+    "AMOUNT_DEVIATION",
     "UNUSUAL_HOUR",
 ]
 
@@ -142,6 +144,7 @@ SCENARIO_LABELS = {
     "IP_MISMATCH": "IP/network mismatch signal",
     "VELOCITY_SPIKE": "Velocity spike signal",
     "FREQUENCY_SPIKE": "Unusual daily frequency",
+    "AMOUNT_DEVIATION": "Amount deviates from usual pattern",
     "UNUSUAL_HOUR": "Unusual transaction time",
 }
 
@@ -168,7 +171,7 @@ def _normalize_scenarios(scenario):
             raise ValueError(
                 "Unsupported simulation scenario. Choose NORMAL, RECENT_SIM_SWAP, "
                 "DEVICE_CHANGE, IP_MISMATCH, VELOCITY_SPIKE, FREQUENCY_SPIKE, "
-                "or UNUSUAL_HOUR."
+                "AMOUNT_DEVIATION, or UNUSUAL_HOUR."
             )
         if token not in cleaned:
             cleaned.append(token)
@@ -219,7 +222,7 @@ _rebuild_balances()
 # registered as a "custom" demo wallet so the whole flow (balance, PIN/OTP,
 # fraud scoring) keeps working end to end.
 
-CUSTOM_WALLET_STARTING_BALANCE = 5000.0
+CUSTOM_WALLET_STARTING_BALANCE = 10000.0
 CUSTOM_WALLET_PIN = "0000"
 CUSTOM_WALLET_BASE_IP = "10.10.10.10"
 CUSTOM_WALLET_DEVICE = "CUSTOM-DEVICE-001"
@@ -560,7 +563,7 @@ def verify_transaction(session_id, code, step_up=False):
     baseline_avg_amount = float(baseline.get("avg_amount") or 0.0)
     amount_deviation = bool(
         baseline_count >= 2 and amount > baseline_avg_amount * 1.5
-    )
+    ) or "AMOUNT_DEVIATION" in scenarios
 
     hour_local = datetime.now(GHANA_TIMEZONE).hour
     usual_hours = baseline.get("usual_hours", [])

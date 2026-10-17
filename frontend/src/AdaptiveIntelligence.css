@@ -25,7 +25,7 @@
   color: #00678f;
   font-weight: 700;
   letter-spacing: 0.12em;
-  font-size: 0.92rem;
+  font-size: 0.84rem;
   margin: 0;
 }
 
@@ -35,20 +35,20 @@
   border: 1px solid #bae6fd;
   border-radius: 999px;
   padding: 2px 10px;
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   font-weight: 600;
 }
 
 .afi-header h2 {
   margin: 0;
-  font-size: 1.45rem;
+  font-size: 1.3rem;
   color: #1e293b;
 }
 
 .afi-subtitle {
   margin: 4px 0 0;
   color: #475569;
-  font-size: 0.95rem;
+  font-size: 0.86rem;
   line-height: 1.45;
 }
 
@@ -61,7 +61,7 @@
   border-radius: 999px;
   padding: 8px 16px;
   font-weight: 800;
-  font-size: 0.88rem;
+  font-size: 0.8rem;
   letter-spacing: 0.08em;
   white-space: nowrap;
 }
@@ -81,7 +81,7 @@
   border-radius: 999px;
   padding: 8px 16px;
   font-weight: 700;
-  font-size: 0.92rem;
+  font-size: 0.84rem;
   cursor: pointer;
   transition: background 0.15s ease;
   white-space: nowrap;
@@ -103,7 +103,7 @@
   border-radius: 999px;
   padding: 8px 16px;
   font-weight: 700;
-  font-size: 0.92rem;
+  font-size: 0.84rem;
   cursor: pointer;
   transition: background 0.15s;
 }
@@ -115,7 +115,7 @@
 .afi-updated {
   margin: 0 0 12px;
   color: #64748b;
-  font-size: 0.9rem;
+  font-size: 0.82rem;
 }
 
 .afi-live.on {
@@ -171,20 +171,20 @@
 .afi-retrain-banner h3 {
   margin: 0 0 4px;
   color: #9a3412;
-  font-size: 0.95rem;
+  font-size: 0.86rem;
 }
 
 .afi-retrain-banner p {
   margin: 0 0 6px;
   color: #c2410c;
-  font-size: 0.85rem;
+  font-size: 0.78rem;
 }
 
 .afi-retrain-banner ul {
   margin: 0;
   padding-left: 18px;
   color: #7c2d12;
-  font-size: 0.82rem;
+  font-size: 0.76rem;
 }
 
 .afi-healthy-banner {
@@ -198,7 +198,7 @@
   padding: 12px 16px;
   margin-bottom: 16px;
   font-weight: 600;
-  font-size: 0.88rem;
+  font-size: 0.8rem;
 }
 
 .afi-grid {
@@ -236,15 +236,31 @@
 
 .afi-card h3 {
   margin: 0 0 12px;
-  font-size: 0.92rem;
+  font-size: 0.84rem;
   color: #1e293b;
 }
 
 .afi-note {
   margin: 10px 0 0;
   color: #94a3b8;
-  font-size: 0.86rem;
+  font-size: 0.78rem;
   line-height: 1.5;
+}
+
+.afi-drift-risk-chart {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.afi-drift-risk-chart h4 {
+  margin: 0 0 6px;
+  color: #334155;
+  font-size: 0.78rem;
+}
+
+.afi-drift-risk-chart .afi-trend-svg {
+  height: 170px;
 }
 
 .afi-note code {
@@ -254,9 +270,61 @@
   font-size: 0.82rem;
 }
 
+.afi-feedback-empty,
+.afi-evaluation-unavailable {
+  margin: 10px 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.afi-feedback-empty {
+  border: 1px solid #bae6fd;
+  background: #f0f9ff;
+  color: #075985;
+}
+
+.afi-evaluation-unavailable {
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.afi-time-window-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.afi-replay-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  color: #64748b;
+  font-size: 0.76rem;
+}
+
+.afi-time-window {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.76rem;
+}
+
+.afi-time-window strong {
+  color: #0f172a;
+}
+
 .afi-empty {
   color: #94a3b8;
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   text-align: center;
   padding: 24px 0;
 }
@@ -354,7 +422,7 @@
 
 .trend-label {
   fill: #94a3b8;
-  font-size: 13px;
+  font-size: 10px;
 }
 
 .afi-trend-svg {
@@ -387,13 +455,13 @@
 
 .afi-axis-tick {
   fill: #64748b;
-  font-size: 15px;
+  font-size: 11px;
   font-weight: 500;
 }
 
 .afi-axis-title {
   fill: #334155;
-  font-size: 15px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -416,7 +484,7 @@
 
 .afi-kpis span {
   color: #64748b;
-  font-size: 0.88rem;
+  font-size: 0.8rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -424,7 +492,7 @@
 
 .afi-kpis strong {
   color: #0f172a;
-  font-size: 1.25rem;
+  font-size: 1.1rem;
 }
 
 .afi-decision-list,
@@ -444,7 +512,7 @@
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  font-size: 0.92rem;
+  font-size: 0.84rem;
   color: #334155;
 }
 
@@ -478,7 +546,7 @@
   border-radius: 8px;
   padding: 9px 16px;
   font-weight: 700;
-  font-size: 0.94rem;
+  font-size: 0.86rem;
   cursor: pointer;
   transition: background 0.15s ease;
 }
@@ -496,7 +564,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 0.95rem;
+  font-size: 0.86rem;
 }
 
 .afi-recalibrate-btn {
@@ -506,7 +574,7 @@
   border-radius: 8px;
   padding: 7px 15px;
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 0.82rem;
   cursor: pointer;
   margin-left: auto;
   transition: background 0.15s ease;
@@ -529,7 +597,7 @@
   padding: 12px 18px;
   border-radius: 12px;
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.86rem;
   margin-bottom: 16px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
 }
@@ -563,7 +631,7 @@
 
 .afi-feed-header h3 {
   margin: 0 0 4px;
-  font-size: 1.18rem;
+  font-size: 1.05rem;
   color: #0f172a;
 }
 
@@ -578,7 +646,7 @@
   border: 1px solid #cbd5e1;
   border-radius: 999px;
   padding: 6px 14px;
-  font-size: 0.9rem;
+  font-size: 0.82rem;
   color: #334155;
   font-weight: 500;
 }
@@ -601,7 +669,7 @@
   width: 100%;
   border-collapse: collapse;
   text-align: left;
-  font-size: 0.92rem;
+  font-size: 0.84rem;
 }
 
 .afi-table th {
@@ -610,7 +678,7 @@
   color: #475569;
   font-weight: 700;
   border-bottom: 1.5px solid #e2e8f0;
-  font-size: 0.88rem;
+  font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
@@ -636,7 +704,7 @@
   padding: 2px 7px;
   border-radius: 6px;
   font-family: ui-monospace, monospace;
-  font-size: 0.86rem;
+  font-size: 0.78rem;
   color: #334155;
 }
 
@@ -644,7 +712,7 @@
   display: inline-block;
   padding: 3px 9px;
   border-radius: 6px;
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   font-weight: 700;
   letter-spacing: 0.03em;
 }
@@ -671,7 +739,7 @@
   display: inline-block;
   padding: 3px 9px;
   border-radius: 6px;
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   font-weight: 600;
 }
 
@@ -750,14 +818,14 @@
 }
 
 .afi-trigger-policy {
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   color: #64748b;
   font-weight: 500;
 }
 
 .afi-trigger-header h3 {
   margin: 4px 0 4px;
-  font-size: 1.18rem;
+  font-size: 1.05rem;
   color: #0f172a;
 }
 
@@ -774,7 +842,7 @@
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  font-size: 0.88rem;
+  font-size: 0.8rem;
   font-weight: 600;
   color: #334155;
   user-select: none;
@@ -824,7 +892,7 @@
   border: none;
   border-radius: 999px;
   padding: 8px 18px;
-  font-size: 0.88rem;
+  font-size: 0.8rem;
   font-weight: 700;
   cursor: pointer;
   transition: background 0.15s ease, transform 0.1s ease;
@@ -870,13 +938,13 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 0.9rem;
+  font-size: 0.82rem;
   color: #475569;
 }
 
 .afi-trigger-kpi-top strong {
   color: #0f172a;
-  font-size: 0.95rem;
+  font-size: 0.86rem;
 }
 
 .afi-progress-track {
@@ -904,7 +972,7 @@
 .afi-trigger-stat-row {
   display: flex;
   justify-content: space-between;
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   color: #64748b;
 }
 
@@ -913,7 +981,7 @@
 }
 
 .afi-trigger-desc {
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   color: #64748b;
   line-height: 1.4;
 }
@@ -925,7 +993,7 @@
   border: 1px solid #fecaca;
   border-radius: 8px;
   color: #991b1b;
-  font-size: 0.86rem;
+  font-size: 0.78rem;
 }
 
 .afi-trigger-reasons-box strong {
@@ -994,7 +1062,7 @@
 
 .afi-sensitivity-header h3 {
   margin: 4px 0;
-  font-size: 1.25rem;
+  font-size: 1.1rem;
   color: #0f172a;
 }
 
@@ -1047,7 +1115,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 0.95rem;
+  font-size: 0.86rem;
   color: #334155;
   margin-bottom: 12px;
   flex-wrap: wrap;
@@ -1057,7 +1125,7 @@
 .afi-slider-value {
   color: #0284c7;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 1.15rem;
+  font-size: 1.02rem;
   margin-left: 4px;
 }
 
@@ -1154,13 +1222,13 @@
 .afi-sens-kpi.amber::before { background: #d97706; }
 
 .afi-sens-label {
-  font-size: 0.84rem;
+  font-size: 0.78rem;
   color: #64748b;
   font-weight: 600;
 }
 
 .afi-sens-value {
-  font-size: 1.45rem;
+  font-size: 1.25rem;
   font-weight: 800;
   color: #0f172a;
   letter-spacing: -0.02em;

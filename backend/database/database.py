@@ -618,6 +618,18 @@ def initialize_database():
         """
     )
 
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_drift_baseline (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            samples TEXT NOT NULL,
+            transaction_count INTEGER NOT NULL DEFAULT 0,
+            recorded_by TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        )
+        """
+    )
+
     connection.commit()
 
     connection.close()
@@ -1957,7 +1969,7 @@ def get_daily_transaction_stats(days=14):
 
 
 def get_recent_transaction_samples(days=14, limit=5000):
-    """Return transaction-level amount and risk samples for drift checks."""
+    """Return transaction-level samples for drift checks."""
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -1965,7 +1977,7 @@ def get_recent_transaction_samples(days=14, limit=5000):
         since = datetime.now(timezone.utc) - timedelta(days=days)
         cursor.execute(
             """
-            SELECT t.amount, r.risk_score
+            SELECT t.amount, r.risk_score, t.created_at
             FROM transactions t
             LEFT JOIN risk_assessments r
                 ON r.transaction_id = t.id
@@ -1977,6 +1989,64 @@ def get_recent_transaction_samples(days=14, limit=5000):
         )
         return [dict(row) for row in reversed(cursor.fetchall())]
 
+    finally:
+        connection.close()
+
+
+def get_model_drift_baseline():
+    """Return the current distribution baseline, if an operator has recorded one."""
+    connection = get_connection()
+    try:
+        row = connection.execute(
+            """
+            SELECT samples, transaction_count, recorded_by, recorded_at
+            FROM model_drift_baseline
+            WHERE id = 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+
+        baseline = dict(row)
+        baseline["samples"] = json.loads(baseline["samples"])
+        if not isinstance(baseline["samples"], dict):
+            raise ValueError("Stored model drift baseline must be a JSON object.")
+        return baseline
+    finally:
+        connection.close()
+
+
+def record_model_drift_baseline(samples, transaction_count, recorded_by):
+    """Replace the reference distributions used by adaptive PSI monitoring."""
+    connection = get_connection()
+    try:
+        recorded_at = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """
+            INSERT INTO model_drift_baseline (
+                id, samples, transaction_count, recorded_by, recorded_at
+            )
+            VALUES (1, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                samples = excluded.samples,
+                transaction_count = excluded.transaction_count,
+                recorded_by = excluded.recorded_by,
+                recorded_at = excluded.recorded_at
+            """,
+            (
+                json.dumps(samples),
+                transaction_count,
+                recorded_by,
+                recorded_at,
+            ),
+        )
+        connection.commit()
+        return {
+            "samples": samples,
+            "transaction_count": transaction_count,
+            "recorded_by": recorded_by,
+            "recorded_at": recorded_at,
+        }
     finally:
         connection.close()
 
@@ -2093,6 +2163,40 @@ def get_analyst_decision_counts():
             row["analyst_decision"]: row["count"]
             for row in cursor.fetchall()
         }
+
+    finally:
+        connection.close()
+
+
+def get_resolved_analyst_outcome_trend(days=14):
+    """Return daily resolved case outcomes for recent analyst feedback."""
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cursor.execute(
+            """
+            SELECT
+                substr(resolved_at, 1, 10) AS day,
+                SUM(CASE WHEN analyst_decision = 'FRAUD_CONFIRMED'
+                    THEN 1 ELSE 0 END) AS confirmed,
+                SUM(CASE WHEN analyst_decision = 'LEGITIMATE'
+                    THEN 1 ELSE 0 END) AS legitimate,
+                SUM(CASE WHEN analyst_decision = 'INCONCLUSIVE'
+                    THEN 1 ELSE 0 END) AS inconclusive
+            FROM fraud_cases
+            WHERE case_status = 'RESOLVED'
+              AND analyst_decision IN (
+                  'FRAUD_CONFIRMED', 'LEGITIMATE', 'INCONCLUSIVE'
+              )
+              AND resolved_at >= ?
+            GROUP BY substr(resolved_at, 1, 10)
+            ORDER BY day
+            """,
+            (since,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
 
     finally:
         connection.close()
@@ -2316,6 +2420,7 @@ def get_latest_model_version():
         cursor.execute(
             """
             SELECT * FROM model_versions
+            WHERE model_type != 'PrototypeBaselineMarker'
             ORDER BY id DESC LIMIT 1
             """
         )

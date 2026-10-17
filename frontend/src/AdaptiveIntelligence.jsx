@@ -188,43 +188,6 @@ function TrendSpark({ data, stroke = "#00678f", label }) {
   );
 }
 
-function simulateThresholdMetrics(threshold) {
-  const baseT = 0.5435;
-  const d = threshold - baseT;
-
-  // Recall drops smoothly as threshold rises (PaySim calibrated holdout curve)
-  const recallRaw = 76.4 - d * 215 - (d > 0 ? d * d * 300 : -d * d * 220);
-  const recall = Math.min(96.5, Math.max(38.0, recallRaw));
-
-  // False positive rate drops exponentially as threshold rises
-  const fprRaw = 2.14 * Math.exp(-15.8 * d);
-  const fpr = Math.min(11.8, Math.max(0.18, fprRaw));
-
-  // Mobile money natural fraud prevalence is ~0.25% (2.5 per 1,000 txns)
-  const prev = 0.0025;
-  const tp = (recall / 100) * prev;
-  const fp = (fpr / 100) * (1 - prev);
-  const precision = (tp / (tp + fp)) * 100;
-
-  // Friction challenges (SMS OTP / Biometrics) per 1,000 transactions
-  const friction = Math.round(fpr * 10 + 2.5);
-
-  const deltaRecall = recall - 76.4;
-  const deltaFpr = fpr - 2.14;
-  const deltaFriction = friction - 24;
-
-  return {
-    threshold: Number(threshold.toFixed(4)),
-    recall: Number(recall.toFixed(1)),
-    fpr: Number(fpr.toFixed(2)),
-    precision: Number(precision.toFixed(1)),
-    friction,
-    deltaRecall: Number(deltaRecall.toFixed(1)),
-    deltaFpr: Number(deltaFpr.toFixed(2)),
-    deltaFriction,
-  };
-}
-
 function AutomatedTriggerCard({
   trigger,
   onRetrain,
@@ -233,7 +196,9 @@ function AutomatedTriggerCard({
   setAutoRetrainEnabled,
   canManageModel,
 }) {
-  const newTx = trigger?.new_transactions_since_retrain ?? 0;
+  const newTx = trigger?.new_transactions_since_baseline
+    ?? trigger?.new_transactions_since_retrain
+    ?? 0;
   const volLimit = trigger?.volume_threshold ?? 50;
   const volPct = Math.min(100, Math.round((newTx / volLimit) * 100));
   const isBreached = Boolean(trigger?.action_required);
@@ -244,25 +209,25 @@ function AutomatedTriggerCard({
         <div>
           <div className="afi-trigger-badge-row">
             <span className={`afi-trigger-pill ${isBreached ? "breach-pill" : "stable-pill"}`}>
-              {isBreached ? "RECALIBRATION REQUIRED" : "ACTIVE MONITORING · WITHIN LIMITS"}
+              {isBreached ? "BASELINE UPDATE REQUIRED" : "ACTIVE MONITORING · WITHIN LIMITS"}
             </span>
-            <span className="afi-trigger-policy">BoG / ISO Drift Governance</span>
+            <span className="afi-trigger-policy">Prototype Monitoring Thresholds</span>
           </div>
-          <h3>Automated Drift & Volume Thresholds</h3>
+          <h3>Drift Monitoring & Baseline Thresholds</h3>
           <p className="afi-note">
-            A critical PSI shift (≥ 0.25) or 50 new transactions records a prototype baseline marker. This updates version tracking only; it does not refit the detector or reset the PSI baseline.
+            A critical PSI shift (≥ 0.25) or 50 new transactions recommends capturing a reference distribution. This resets the PSI comparison baseline, but does not refit or version the detector.
           </p>
         </div>
         {canManageModel ? (
           <div className="afi-trigger-actions">
-            <label className="afi-toggle-label" title="Automatically record a prototype version marker whenever a threshold is breached">
+            <label className="afi-toggle-label" title="Automatically capture a reference distribution whenever a threshold is breached">
               <input
                 type="checkbox"
                 checked={autoRetrainEnabled}
                 onChange={(e) => setAutoRetrainEnabled(e.target.checked)}
               />
               <span className="afi-toggle-switch" />
-              <span className="afi-toggle-text">Auto-record marker on breach</span>
+              <span className="afi-toggle-text">Auto-capture baseline on breach</span>
             </label>
             <button
               type="button"
@@ -270,11 +235,11 @@ function AutomatedTriggerCard({
               onClick={() => onRetrain({ triggered_by: "AUTOMATED_THRESHOLD_RULE" })}
               disabled={retraining}
             >
-              {retraining ? "Recording Marker…" : isBreached ? "Record Triggered Baseline Marker" : "Record Baseline Marker"}
+              {retraining ? "Capturing Baseline…" : isBreached ? "Capture Triggered Baseline" : "Capture Baseline"}
             </button>
           </div>
         ) : (
-          <p className="afi-note">Recording a baseline marker is restricted to administrators.</p>
+          <p className="afi-note">Capturing a new reference baseline is restricted to administrators.</p>
         )}
       </div>
 
@@ -292,8 +257,8 @@ function AutomatedTriggerCard({
           </div>
           <span className="afi-trigger-desc">
             {newTx >= volLimit
-              ? "Volume threshold reached. A prototype baseline marker is recommended."
-              : `${volLimit - newTx} more transactions until the next version marker.`}
+              ? "Volume threshold reached. A new reference baseline is recommended."
+              : `${volLimit - newTx} more transactions until the next baseline review.`}
           </span>
         </div>
 
@@ -330,10 +295,22 @@ function AutomatedTriggerCard({
   );
 }
 
-function ThresholdSensitivityVisualizer() {
-  const [threshold, setThreshold] = useState(0.5435);
+function ThresholdSensitivityVisualizer({ modelEvaluation }) {
+  const sensitivity = modelEvaluation?.hybrid_threshold_sensitivity;
+  const samplePoints = sensitivity?.points || [];
+  const minimumThreshold = samplePoints[0]?.threshold ?? 0.4;
+  const maximumThreshold =
+    samplePoints[samplePoints.length - 1]?.threshold ?? 0.65;
+  const activeMediumBoundary =
+    modelEvaluation?.active_medium_boundary ?? minimumThreshold;
+  const activeHighBoundary = modelEvaluation?.active_high_boundary ?? 0.5;
+  const [threshold, setThreshold] = useState(activeHighBoundary);
   const containerRef = useRef(null);
   const [svgWidth, setSvgWidth] = useState(680);
+
+  useEffect(() => {
+    setThreshold(activeHighBoundary);
+  }, [activeHighBoundary]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -345,73 +322,116 @@ function ThresholdSensitivityVisualizer() {
     return () => observer.disconnect();
   }, []);
 
-  const currentMetrics = simulateThresholdMetrics(threshold);
+  const findNearestPoint = (target) =>
+    samplePoints.reduce(
+      (closest, point) =>
+        Math.abs(point.threshold - target)
+          < Math.abs(closest.threshold - target)
+          ? point
+          : closest,
+      samplePoints[0],
+    );
+
+  if (!samplePoints.length) {
+    return (
+      <article className="afi-card afi-sensitivity-card">
+        <h3>Threshold Sensitivity (PaySim validation)</h3>
+        <p className="afi-note">
+          No measured threshold curve is available for the active model. The
+          dashboard will not estimate or invent these metrics.
+        </p>
+      </article>
+    );
+  }
+
+  const currentMetrics = findNearestPoint(threshold);
+  const baselineMetrics = findNearestPoint(activeHighBoundary);
+  const validationRows = sensitivity.rows || 0;
+  const percent = (value) => (value * 100).toFixed(1);
+  const delta = (value, baseline) => {
+    const difference = (value - baseline) * 100;
+    return `${difference >= 0 ? "+" : ""}${difference.toFixed(1)} pp`;
+  };
+  const flaggedPerThousand = (point) =>
+    validationRows ? (point.flagged_count / validationRows) * 1000 : 0;
 
   const height = 240;
   const plot = { left: 54, right: 54, top: 22, bottom: 44 };
   const plotWidth = Math.max(100, svgWidth - plot.left - plot.right);
   const plotHeight = height - plot.top - plot.bottom;
-
-  const samplePoints = [];
-  for (let t = 0.45; t <= 0.6501; t += 0.005) {
-    samplePoints.push(simulateThresholdMetrics(t));
-  }
-
-  const getX = (t) => plot.left + ((t - 0.45) / 0.20) * plotWidth;
+  const maximumFpr = Math.max(
+    1,
+    Math.ceil(
+      Math.max(...samplePoints.map((point) => point.false_positive_rate)) * 100 / 5,
+    ) * 5,
+  );
+  const getX = (t) =>
+    plot.left
+    + ((t - minimumThreshold) / (maximumThreshold - minimumThreshold))
+      * plotWidth;
   const getYRecall = (r) => plot.top + plotHeight - (r / 100) * plotHeight;
-  const getYFpr = (f) => plot.top + plotHeight - (Math.min(12, f) / 12) * plotHeight;
-
-  const recallCoords = samplePoints.map((p) => `${getX(p.threshold).toFixed(1)},${getYRecall(p.recall).toFixed(1)}`);
+  const getYFpr = (f) =>
+    plot.top + plotHeight - (Math.min(maximumFpr, f * 100) / maximumFpr) * plotHeight;
+  const recallCoords = samplePoints.map(
+    (point) =>
+      `${getX(point.threshold).toFixed(1)},${getYRecall(point.recall * 100).toFixed(1)}`,
+  );
   const recallPath = `M ${recallCoords.join(" L ")}`;
-  const recallArea = `M ${getX(0.45).toFixed(1)},${plot.top + plotHeight} L ${recallCoords.join(" L ")} L ${getX(0.65).toFixed(1)},${plot.top + plotHeight} Z`;
-
-  const fprCoords = samplePoints.map((p) => `${getX(p.threshold).toFixed(1)},${getYFpr(p.fpr).toFixed(1)}`);
+  const fprCoords = samplePoints.map(
+    (point) =>
+      `${getX(point.threshold).toFixed(1)},${getYFpr(point.false_positive_rate).toFixed(1)}`,
+  );
   const fprPath = `M ${fprCoords.join(" L ")}`;
-
-  const baselineX = getX(0.5435);
+  const baselineX = getX(activeHighBoundary);
   const activeX = getX(threshold);
-  const activeYRecall = getYRecall(currentMetrics.recall);
-  const activeYFpr = getYFpr(currentMetrics.fpr);
-
-  const balancedStartX = getX(0.52);
-  const balancedEndX = getX(0.57);
+  const activeYRecall = getYRecall(currentMetrics.recall * 100);
+  const activeYFpr = getYFpr(currentMetrics.false_positive_rate);
+  const xTicks = Array.from(
+    { length: 6 },
+    (_, index) =>
+      minimumThreshold + (maximumThreshold - minimumThreshold) * index / 5,
+  );
 
   return (
     <article className="afi-card afi-sensitivity-card" ref={containerRef}>
       <div className="afi-sensitivity-header">
         <div>
           <div className="afi-sensitivity-badge-row">
-            <span className="afi-sensitivity-pill">POLICY SIMULATOR</span>
-            <span className="afi-sensitivity-mode">Bank of Ghana Risk Appetite Model</span>
+            <span className="afi-sensitivity-pill">MEASURED PAYSIM VALIDATION</span>
+            <span className="afi-sensitivity-mode">Offline analysis · not applied to runtime</span>
           </div>
-          <h3>Threshold Sensitivity Visualizer (FPR vs. Fraud Recall)</h3>
+          <h3>Hybrid Policy Threshold Sensitivity</h3>
           <p className="afi-note">
-            Simulate operational trade-offs by adjusting the hybrid decision threshold between <strong>0.450</strong> (aggressive fraud capture) and <strong>0.650</strong> (minimal false alarms).
+            Measured on {Number(sensitivity.rows).toLocaleString()} validation
+            transactions ({Number(sensitivity.fraud_labels).toLocaleString()} fraud
+            labels). Move the cutoff to inspect the observed precision/recall
+            trade-off; this what-if control does not change live decisions.
+            Security signals absent from PaySim are not represented in this curve.
           </p>
         </div>
 
         <div className="afi-presets">
-          <span className="afi-preset-label">Presets:</span>
+          <span className="afi-preset-label">Compare cutoffs:</span>
           <button
             type="button"
-            className={`afi-preset-btn ${Math.abs(threshold - 0.48) < 0.002 ? "active" : ""}`}
-            onClick={() => setThreshold(0.48)}
+            className={`afi-preset-btn ${Math.abs(threshold - activeMediumBoundary) < 0.002 ? "active" : ""}`}
+            onClick={() => setThreshold(activeMediumBoundary)}
           >
-            Aggressive (0.480)
+            MEDIUM+ ({activeMediumBoundary.toFixed(3)})
           </button>
           <button
             type="button"
-            className={`afi-preset-btn ${Math.abs(threshold - 0.5435) < 0.002 ? "active" : ""}`}
-            onClick={() => setThreshold(0.5435)}
+            className={`afi-preset-btn ${Math.abs(threshold - activeHighBoundary) < 0.002 ? "active" : ""}`}
+            onClick={() => setThreshold(activeHighBoundary)}
           >
-            Baseline (0.5435)
+            Current HIGH ({activeHighBoundary.toFixed(3)})
           </button>
           <button
             type="button"
-            className={`afi-preset-btn ${Math.abs(threshold - 0.62) < 0.002 ? "active" : ""}`}
-            onClick={() => setThreshold(0.62)}
+            className={`afi-preset-btn ${Math.abs(threshold - 0.6) < 0.002 ? "active" : ""}`}
+            onClick={() => setThreshold(0.6)}
           >
-            Conservative (0.620)
+            More conservative (0.600)
           </button>
         </div>
       </div>
@@ -419,100 +439,74 @@ function ThresholdSensitivityVisualizer() {
       <div className="afi-slider-bar">
         <div className="afi-slider-label-row">
           <span>
-            Operating Threshold: <strong className="afi-slider-value">{threshold.toFixed(4)}</strong>
+            What-if cutoff: <strong className="afi-slider-value">{currentMetrics.threshold.toFixed(3)}</strong>
           </span>
           <span className="afi-slider-hint">
-            {threshold < 0.52
-              ? "High Recall Zone (more fraud intercepted, higher customer OTP friction)"
-              : threshold > 0.57
-              ? "Low Friction Zone (smoother checkout, risk of subtle fraud leakage)"
-              : "Balanced Operating Zone (optimal risk vs. customer experience)"}
+            Active MEDIUM boundary: {activeMediumBoundary.toFixed(3)}
+            {" · "}active HIGH boundary: {activeHighBoundary.toFixed(3)}
           </span>
         </div>
         <div className="afi-range-wrapper">
-          <span className="afi-range-edge">0.450</span>
+          <span className="afi-range-edge">{minimumThreshold.toFixed(3)}</span>
           <input
             type="range"
-            min="0.450"
-            max="0.650"
+            min={minimumThreshold}
+            max={maximumThreshold}
             step="0.005"
             value={threshold}
-            onChange={(e) => setThreshold(parseFloat(e.target.value))}
+            onChange={(event) => setThreshold(Number(event.target.value))}
             className="afi-threshold-slider"
           />
-          <span className="afi-range-edge">0.650</span>
+          <span className="afi-range-edge">{maximumThreshold.toFixed(3)}</span>
         </div>
       </div>
 
       <div className="afi-sensitivity-kpis">
         <div className="afi-sens-kpi teal">
-          <span className="afi-sens-label">Estimated Fraud Recall</span>
-          <strong className="afi-sens-value">{currentMetrics.recall}%</strong>
-          <span className={`afi-sens-delta ${currentMetrics.deltaRecall >= 0 ? "positive" : "negative"}`}>
-            {currentMetrics.deltaRecall >= 0 ? `+${currentMetrics.deltaRecall}%` : `${currentMetrics.deltaRecall}%`} vs baseline
+          <span className="afi-sens-label">Validation fraud recall</span>
+          <strong className="afi-sens-value">{percent(currentMetrics.recall)}%</strong>
+          <span className={`afi-sens-delta ${currentMetrics.recall >= baselineMetrics.recall ? "positive" : "negative"}`}>
+            {delta(currentMetrics.recall, baselineMetrics.recall)} vs current HIGH
           </span>
         </div>
 
         <div className="afi-sens-kpi rose">
-          <span className="afi-sens-label">False Positive Rate (FPR)</span>
-          <strong className="afi-sens-value">{currentMetrics.fpr}%</strong>
-          <span className={`afi-sens-delta ${currentMetrics.deltaFpr <= 0 ? "positive" : "negative"}`}>
-            {currentMetrics.deltaFpr >= 0 ? `+${currentMetrics.deltaFpr}%` : `${currentMetrics.deltaFpr}%`} vs baseline
+          <span className="afi-sens-label">Validation false-positive rate</span>
+          <strong className="afi-sens-value">{percent(currentMetrics.false_positive_rate)}%</strong>
+          <span className={`afi-sens-delta ${currentMetrics.false_positive_rate <= baselineMetrics.false_positive_rate ? "positive" : "negative"}`}>
+            {delta(currentMetrics.false_positive_rate, baselineMetrics.false_positive_rate)} vs current HIGH
           </span>
         </div>
 
         <div className="afi-sens-kpi blue">
-          <span className="afi-sens-label">Estimated Precision</span>
-          <strong className="afi-sens-value">{currentMetrics.precision}%</strong>
-          <span className="afi-sens-sub">True fraud / challenged alerts</span>
+          <span className="afi-sens-label">Validation precision</span>
+          <strong className="afi-sens-value">{percent(currentMetrics.precision)}%</strong>
+          <span className="afi-sens-sub">Confirmed PaySim fraud / flagged transactions</span>
         </div>
 
         <div className="afi-sens-kpi amber">
-          <span className="afi-sens-label">Customer Friction</span>
-          <strong className="afi-sens-value">~{currentMetrics.friction} / 1k</strong>
-          <span className={`afi-sens-delta ${currentMetrics.deltaFriction <= 0 ? "positive" : "negative"}`}>
-            {currentMetrics.deltaFriction >= 0 ? `+${currentMetrics.deltaFriction}` : `${currentMetrics.deltaFriction}`} challenges / 1,000 txns
+          <span className="afi-sens-label">Flagged per 1,000 validation transactions</span>
+          <strong className="afi-sens-value">{flaggedPerThousand(currentMetrics).toFixed(1)}</strong>
+          <span className="afi-sens-sub">
+            {Number(currentMetrics.flagged_count).toLocaleString()} flagged of{" "}
+            {Number(validationRows).toLocaleString()}
           </span>
         </div>
       </div>
+      <p className="afi-note">
+        {sensitivity.selection_note}
+      </p>
 
       <div className="afi-sens-chart-wrapper">
         <svg
           viewBox={`0 0 ${svgWidth} ${height}`}
           className="afi-sens-svg"
           role="img"
-          aria-label="Threshold sensitivity curve showing Recall vs False Positive Rate"
+          aria-label="Measured PaySim validation recall and false-positive rate by hybrid score threshold"
         >
-          <defs>
-            <linearGradient id="sensRecallGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#0284c7" stopOpacity="0.22" />
-              <stop offset="100%" stopColor="#0284c7" stopOpacity="0.02" />
-            </linearGradient>
-          </defs>
-
-          {/* Balanced Region Background */}
-          <rect
-            x={balancedStartX}
-            y={plot.top}
-            width={balancedEndX - balancedStartX}
-            height={plotHeight}
-            fill="#f0fdf4"
-            opacity="0.8"
-          />
-          <text
-            x={(balancedStartX + balancedEndX) / 2}
-            y={plot.top + 14}
-            textAnchor="middle"
-            fill="#16a34a"
-            fontSize="12"
-            fontWeight="700"
-          >
-            OPTIMAL ZONE (0.52 - 0.57)
-          </text>
-
-          {/* Horizontal Gridlines */}
           {[0, 25, 50, 75, 100].map((val) => {
             const y = getYRecall(val);
+            const fprTick = (val / 100) * maximumFpr;
             return (
               <g key={val}>
                 <line x1={plot.left} x2={svgWidth - plot.right} y1={y} y2={y} stroke="#f1f5f9" strokeDasharray="3 3" />
@@ -520,14 +514,13 @@ function ThresholdSensitivityVisualizer() {
                   {val}%
                 </text>
                 <text x={svgWidth - plot.right + 8} y={y + 4} textAnchor="start" fontSize="12" fill="#e11d48" fontWeight="600">
-                  {((val / 100) * 12).toFixed(1)}%
+                  {fprTick.toFixed(1)}%
                 </text>
               </g>
             );
           })}
 
-          {/* X Axis Ticks */}
-          {[0.45, 0.50, 0.55, 0.60, 0.65].map((t) => {
+          {xTicks.map((t) => {
             const x = getX(t);
             return (
               <g key={t}>
@@ -539,14 +532,9 @@ function ThresholdSensitivityVisualizer() {
             );
           })}
 
-          {/* Recall Curve (Teal) */}
-          <path d={recallArea} fill="url(#sensRecallGrad)" />
           <path d={recallPath} fill="none" stroke="#0284c7" strokeWidth="2.5" />
-
-          {/* FPR Curve (Rose) */}
           <path d={fprPath} fill="none" stroke="#e11d48" strokeWidth="2.5" strokeDasharray="5 3" />
 
-          {/* Baseline Marker */}
           <line
             x1={baselineX}
             x2={baselineX}
@@ -557,10 +545,9 @@ function ThresholdSensitivityVisualizer() {
             strokeDasharray="4 3"
           />
           <text x={baselineX} y={plot.top + plotHeight + 32} textAnchor="middle" fontSize="12" fill="#64748b" fontWeight="700">
-            Prod (0.5435)
+            HIGH ({activeHighBoundary.toFixed(3)})
           </text>
 
-          {/* Active Threshold Indicator Line */}
           <line
             x1={activeX}
             x2={activeX}
@@ -570,11 +557,9 @@ function ThresholdSensitivityVisualizer() {
             strokeWidth="2"
           />
 
-          {/* Highlight Points on Curves */}
           <circle cx={activeX} cy={activeYRecall} r="5" fill="#0284c7" stroke="#ffffff" strokeWidth="2" />
           <circle cx={activeX} cy={activeYFpr} r="5" fill="#e11d48" stroke="#ffffff" strokeWidth="2" />
 
-          {/* Axis Labels */}
           <text x={plot.left} y={plot.top - 6} textAnchor="start" fontSize="13" fill="#0284c7" fontWeight="700">
             ▲ Fraud Recall (%)
           </text>
@@ -586,19 +571,15 @@ function ThresholdSensitivityVisualizer() {
         <div className="afi-sens-legend">
           <div className="afi-legend-item">
             <span className="afi-legend-line teal" />
-            <span>Fraud Recall (Interception Rate)</span>
+            <span>Measured validation recall</span>
           </div>
           <div className="afi-legend-item">
             <span className="afi-legend-line rose dashed" />
-            <span>False Positive Rate (Benign Challenged)</span>
+            <span>Measured validation false-positive rate</span>
           </div>
           <div className="afi-legend-item">
             <span className="afi-legend-line gray dashed" />
-            <span>Production Baseline (0.5435)</span>
-          </div>
-          <div className="afi-legend-item">
-            <span className="afi-legend-box green" />
-            <span>Optimal Range (0.52 - 0.57)</span>
+            <span>Current HIGH boundary ({activeHighBoundary.toFixed(3)})</span>
           </div>
         </div>
       </div>
@@ -615,6 +596,8 @@ export default function AdaptiveIntelligence({ currentUser }) {
   const [updatedAt, setUpdatedAt] = useState("");
   const [retraining, setRetraining] = useState(false);
   const [retrainSuccess, setRetrainSuccess] = useState("");
+  const [performanceReplayIndex, setPerformanceReplayIndex] = useState(-1);
+  const [performanceReplayPlaying, setPerformanceReplayPlaying] = useState(false);
   const [autoRetrainEnabled, setAutoRetrainEnabled] = useState(() => {
     return localStorage.getItem("momo_auto_retrain_enabled") === "true";
   });
@@ -650,22 +633,22 @@ export default function AdaptiveIntelligence({ currentUser }) {
     setError("");
     setRetrainSuccess("");
     try {
-      const response = await adminFetch("/api/admin/model/retrain", {
+      const response = await adminFetch("/api/admin/model/baseline", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(options),
       });
       const res = await response.json();
       if (!response.ok) {
-        throw new Error(res.detail || "Failed to record baseline marker.");
+        throw new Error(res.detail || "Failed to capture drift baseline.");
       }
       setRetrainSuccess(
-        `✓ ${res.message || `Prototype baseline marker ${res.version} recorded for ${res.tracked_transactions} transactions.`}`
+        `✓ ${res.message || `Drift baseline captured for ${res.tracked_transactions} transactions.`}`
       );
       await load();
       setTimeout(() => setRetrainSuccess(""), 6000);
     } catch (err) {
-      setError(err.message || "Failed to record baseline marker.");
+      setError(err.message || "Failed to capture drift baseline.");
     } finally {
       setRetraining(false);
     }
@@ -725,6 +708,29 @@ export default function AdaptiveIntelligence({ currentUser }) {
     };
   }, [load]);
 
+  const performanceReplayWindows =
+    data?.runtime_model_evaluation?.hybrid_policy_time_windows?.windows || [];
+
+  useEffect(() => {
+    if (!performanceReplayPlaying || performanceReplayWindows.length === 0) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      if (performanceReplayIndex >= performanceReplayWindows.length - 1) {
+        setPerformanceReplayPlaying(false);
+        return;
+      }
+      setPerformanceReplayIndex((current) => current + 1);
+    }, 1100);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    performanceReplayIndex,
+    performanceReplayPlaying,
+    performanceReplayWindows.length,
+  ]);
+
   if (!data) {
     return (
       <section className="afi-panel">
@@ -740,9 +746,21 @@ export default function AdaptiveIntelligence({ currentUser }) {
   const flagRates = data.flag_rates || {};
   const recentTransactions = data.recent_transactions || [];
   const activeModelVersion = data.active_model_version || "V3.0-HYBRID";
+  const modelEvaluation = data.runtime_model_evaluation;
+  const visiblePerformanceReplayWindows = performanceReplayWindows.slice(
+    0,
+    performanceReplayIndex + 1,
+  );
+  const resolvedCaseFeedback = data.resolved_case_feedback || {};
+  const driftBaseline = data.drift_baseline || {};
   const insufficientDriftData = drift.some(
     (item) => item.status === "insufficient_data"
   );
+  const baselineUpdateRecommended = Boolean(
+    data.baseline_update_recommended ?? data.retrain_recommended
+  );
+  const baselineUpdateReasons =
+    data.baseline_update_reasons || data.retrain_reasons || [];
 
   return (
     <section className="afi-panel">
@@ -751,13 +769,14 @@ export default function AdaptiveIntelligence({ currentUser }) {
           <div className="afi-eyebrow-row">
             <p className="eyebrow">CONTROL EFFECTIVENESS</p>
             <span className="afi-version-badge">
-              Latest Version Record: <strong>{activeModelVersion}</strong>
+              Active Model: <strong>{activeModelVersion}</strong>
             </span>
           </div>
           <h2>Adaptive Fraud Intelligence</h2>
           <p className="afi-subtitle">
             Continuous monitoring of transaction patterns, distribution drift
-            and model performance (BoG, 2019).
+            and selected-case outcome feedback. Prototype thresholds do not
+            certify regulatory compliance.
           </p>
         </div>
         <div className="afi-header-actions">
@@ -767,9 +786,9 @@ export default function AdaptiveIntelligence({ currentUser }) {
               className="afi-retrain-top-btn"
               onClick={() => triggerRetrain()}
               disabled={retraining}
-              title="Record prototype version and transaction-volume marker; does not refit the detector"
+              title="Capture a new reference distribution; this does not refit the detector"
             >
-              {retraining ? "Recording Marker…" : "Record Baseline Marker"}
+              {retraining ? "Capturing Baseline…" : "Capture Baseline"}
             </button>
           )}
           <div className={`afi-live ${live ? "on" : ""}`}>
@@ -786,14 +805,14 @@ export default function AdaptiveIntelligence({ currentUser }) {
       {retrainSuccess && <div className="afi-success-banner">{retrainSuccess}</div>}
       {error && <p className="afi-error">{error}</p>}
 
-      {data.retrain_recommended ? (
+      {baselineUpdateRecommended ? (
         <div className="afi-retrain-banner">
           <div className="afi-banner-icon">⚠</div>
           <div className="afi-banner-body">
-            <h3>Baseline marker recommended</h3>
+            <h3>New drift baseline recommended</h3>
             <p>Distribution shift detected in monitored metrics:</p>
             <ul>
-              {data.retrain_reasons.map((reason) => (
+              {baselineUpdateReasons.map((reason) => (
                 <li key={reason}>{reason}</li>
               ))}
             </ul>
@@ -805,7 +824,7 @@ export default function AdaptiveIntelligence({ currentUser }) {
                   onClick={() => triggerRetrain()}
                   disabled={retraining}
                 >
-                  {retraining ? "Recording Marker…" : "Record Baseline Marker"}
+                  {retraining ? "Capturing Baseline…" : "Capture Baseline"}
                 </button>
               </div>
             )}
@@ -822,7 +841,7 @@ export default function AdaptiveIntelligence({ currentUser }) {
             ) : (
               <>
                 <span>✓</span> No significant drift detected in the monitored
-                distributions. PSI comparisons remain unchanged.
+                distributions against the displayed reference.
               </>
             )}
           </div>
@@ -833,7 +852,7 @@ export default function AdaptiveIntelligence({ currentUser }) {
               onClick={() => triggerRetrain()}
               disabled={retraining}
             >
-              {retraining ? "Recording Marker…" : "Record Baseline Marker"}
+              {retraining ? "Capturing Baseline…" : "Capture Baseline"}
             </button>
           )}
         </div>
@@ -855,53 +874,344 @@ export default function AdaptiveIntelligence({ currentUser }) {
           <h3>Distribution drift (PSI)</h3>
           <DriftBars drift={drift} />
           <p className="afi-note">
-            Transaction-level older-half vs recent-half PSI. At least 10
-            transactions are required in each half; warning ≥ 0.10, critical ≥
-            0.25.
+            {driftBaseline.recorded_at
+              ? `Reference captured ${formatUpdated(driftBaseline.recorded_at)} by ${driftBaseline.recorded_by} from ${driftBaseline.amount_samples} amount and ${driftBaseline.risk_score_samples} risk-score samples.`
+              : "Until an administrator captures a reference, PSI compares the older and recent halves of the rolling sample."}{" "}
+            At least 10 samples per feature are required; warning ≥ 0.10,
+            critical ≥ 0.25.
+          </p>
+          <div className="afi-drift-risk-chart">
+              <h4>Average risk score trend</h4>
+              <TrendSpark
+                data={data.risk_series}
+                stroke="#d9a900"
+                label="Average risk score"
+              />
+              <p className="afi-note">
+                Mean hybrid risk score per day, scaled 0–1.
+              </p>
+          </div>
+        </article>
+
+        <article className="afi-card">
+          <h3>Resolved-case feedback (last 14 days)</h3>
+          <div className="afi-kpis">
+            <div>
+              <span>Conclusive resolved cases</span>
+              <strong>{resolvedCaseFeedback.conclusive_cases ?? 0}</strong>
+            </div>
+            <div>
+              <span>Confirmed share of conclusive cases</span>
+              <strong>
+                {resolvedCaseFeedback.confirmation_rate == null
+                  ? "—"
+                  : `${(resolvedCaseFeedback.confirmation_rate * 100).toFixed(1)}%`}
+              </strong>
+            </div>
+            <div>
+              <span>All fraud decisions</span>
+              <strong>{data.confirmed}</strong>
+            </div>
+            <div>
+              <span>All legitimate decisions</span>
+              <strong>{data.legitimate}</strong>
+            </div>
+          </div>
+          {(resolvedCaseFeedback.conclusive_cases ?? 0) === 0 && (
+            <p className="afi-feedback-empty">
+              No conclusive cases were marked resolved in the last 14 days.
+              In Alerts &amp; investigations, save a FRAUD_CONFIRMED or
+              LEGITIMATE decision and mark that case RESOLVED. Unresolved
+              decisions are excluded from this trend.
+            </p>
+          )}
+          <p className="afi-note">
+            The chart shows the confirmed share among resolved cases with a
+            conclusive decision. Reviews cover flagged cases only, so this
+            selection-biased feedback is not model precision or recall.
+          </p>
+          <TrendSpark
+            data={resolvedCaseFeedback.trend}
+            stroke="#7c3aed"
+            label="Confirmed share of resolved cases"
+          />
+          <p className="afi-note">
+            Inconclusive decisions: {data.inconclusive}. Unreviewed and
+            low-risk transactions are not treated as verified labels.
           </p>
         </article>
 
         <article className="afi-card">
-          <h3>Model performance (analyst decisions)</h3>
-          <div className="afi-kpis">
-            <div>
-              <span>Analyst-confirmed share</span>
-              <strong>
-                {data.analyst_confirmation_rate == null
-                  ? "—"
-                  : `${(data.analyst_confirmation_rate * 100).toFixed(1)}%`}
-              </strong>
-            </div>
-            <div>
-              <span>Confirmed fraud</span>
-              <strong>{data.confirmed}</strong>
-            </div>
-            <div>
-              <span>Legitimate</span>
-              <strong>{data.legitimate}</strong>
-            </div>
-            <div>
-              <span>Inconclusive</span>
-              <strong>{data.inconclusive}</strong>
-            </div>
-          </div>
-          <ul className="afi-decision-list">
-            {Object.entries(decisions).map(([key, value]) => (
-              <li key={key}>
-                <span>{key}</span>
-                <strong>{value}</strong>
-              </li>
-            ))}
-            {Object.keys(decisions).length === 0 && (
-              <li className="afi-muted">No analyst decisions recorded yet.</li>
-            )}
-          </ul>
+          <h3>Active model and policy — PaySim holdout</h3>
+          {modelEvaluation ? (
+            <>
+              <div className="afi-kpis">
+                <div>
+                  <span>Isolation Forest precision</span>
+                  <strong>{(modelEvaluation.precision * 100).toFixed(1)}%</strong>
+                </div>
+                <div>
+                  <span>Isolation Forest recall</span>
+                  <strong>{(modelEvaluation.recall * 100).toFixed(1)}%</strong>
+                </div>
+                <div>
+                  <span>Isolation Forest false-positive rate</span>
+                  <strong>
+                    {(modelEvaluation.false_positive_rate * 100).toFixed(1)}%
+                  </strong>
+                </div>
+                <div>
+                  <span>Hybrid MEDIUM+ false-positive rate</span>
+                  <strong>
+                    {modelEvaluation.hybrid_medium_or_high
+                      ? `${(modelEvaluation.hybrid_medium_or_high.false_positive_rate * 100).toFixed(1)}%`
+                      : "—"}
+                  </strong>
+                </div>
+                <div>
+                  <span>Hybrid HIGH false-positive rate</span>
+                  <strong>
+                    {modelEvaluation.hybrid_high
+                      ? `${(modelEvaluation.hybrid_high.false_positive_rate * 100).toFixed(1)}%`
+                      : "—"}
+                  </strong>
+                </div>
+              </div>
+              <p className="afi-note">
+                Fixed chronological synthetic-data holdout from{" "}
+                {modelEvaluation.dataset}; seed {modelEvaluation.seed}. The
+                test set contains{" "}
+                {Number(modelEvaluation.test_fraud_labels).toLocaleString()}{" "}
+                fraud labels from {Number(modelEvaluation.sampled_rows).toLocaleString()}{" "}
+                sampled transactions ({Number(modelEvaluation.test_rows).toLocaleString()}{" "}
+                test transactions). Hybrid MEDIUM+ precision/recall:{" "}
+                {modelEvaluation.hybrid_medium_or_high
+                  ? `${(modelEvaluation.hybrid_medium_or_high.precision * 100).toFixed(1)}% / ${(modelEvaluation.hybrid_medium_or_high.recall * 100).toFixed(1)}%`
+                  : "not available"}
+                ; hybrid HIGH precision/recall:{" "}
+                {modelEvaluation.hybrid_high
+                  ? `${(modelEvaluation.hybrid_high.precision * 100).toFixed(1)}% / ${(modelEvaluation.hybrid_high.recall * 100).toFixed(1)}%`
+                  : "not available"}.
+              </p>
+              <p className="afi-note">
+                Dataset SHA-256:{" "}
+                <code>{modelEvaluation.dataset_sha256?.slice(0, 16)}…</code>
+                {" · "}scikit-learn {modelEvaluation.scikit_learn_version}
+              </p>
+            </>
+          ) : (
+            <p className="afi-evaluation-unavailable">
+              The running backend did not provide its PaySim evaluation
+              manifest. Restart the backend so it loads the latest
+              models/paysim-runtime artifact.
+            </p>
+          )}
           <p className="afi-note">
-            {data.confirmed + data.legitimate} conclusive analyst decisions —
-            this is not model precision or recall because only investigated
-            cases are labelled.
+            Evaluation is synthetic and fixed; it does not demonstrate
+            real-customer performance or compliance.
           </p>
         </article>
+
+        {modelEvaluation?.hybrid_seed_sensitivity && (
+          <article className="afi-card">
+            <h3>Fixed-policy sensitivity across seeded PaySim runs</h3>
+            <p className="afi-note">
+              Seeds: {modelEvaluation.hybrid_seed_sensitivity.seeds.join(", ")}
+              {" · "}scikit-learn{" "}
+              {modelEvaluation.hybrid_seed_sensitivity.evaluation_scikit_learn_version}
+            </p>
+            <div className="afi-kpis">
+              <div>
+                <span>MEDIUM+ mean FPR</span>
+                <strong>
+                  {(
+                    modelEvaluation.hybrid_seed_sensitivity.medium_or_high
+                      .false_positive_rate.mean * 100
+                  ).toFixed(2)}
+                  %
+                </strong>
+              </div>
+              <div>
+                <span>MEDIUM+ mean recall</span>
+                <strong>
+                  {(
+                    modelEvaluation.hybrid_seed_sensitivity.medium_or_high
+                      .recall.mean * 100
+                  ).toFixed(1)}
+                  %
+                </strong>
+              </div>
+              <div>
+                <span>HIGH mean FPR</span>
+                <strong>
+                  {(
+                    modelEvaluation.hybrid_seed_sensitivity.high
+                      .false_positive_rate.mean * 100
+                  ).toFixed(2)}
+                  %
+                </strong>
+              </div>
+              <div>
+                <span>HIGH mean recall</span>
+                <strong>
+                  {(
+                    modelEvaluation.hybrid_seed_sensitivity.high.recall.mean *
+                    100
+                  ).toFixed(1)}
+                  %
+                </strong>
+              </div>
+            </div>
+            <p className="afi-note">
+              Across-run FPR range: MEDIUM+{" "}
+              {(
+                modelEvaluation.hybrid_seed_sensitivity.medium_or_high
+                  .false_positive_rate.min * 100
+              ).toFixed(2)}
+              –{(
+                modelEvaluation.hybrid_seed_sensitivity.medium_or_high
+                  .false_positive_rate.max * 100
+              ).toFixed(2)}
+              %; HIGH{" "}
+              {(
+                modelEvaluation.hybrid_seed_sensitivity.high
+                  .false_positive_rate.min * 100
+              ).toFixed(2)}
+              –{(
+                modelEvaluation.hybrid_seed_sensitivity.high
+                  .false_positive_rate.max * 100
+              ).toFixed(2)}
+              %.
+            </p>
+            <p className="afi-note">
+              Each run fits a different model on a seeded sample of the same
+              synthetic source. This is sensitivity evidence, not performance
+              of the exact active artifact or independent external validation.
+            </p>
+          </article>
+        )}
+
+        {modelEvaluation?.hybrid_policy_time_windows?.windows?.length > 0 && (
+          <article className="afi-card">
+            <h3>Synthetic labelled-performance replay</h3>
+            <p className="afi-note">
+              Replay chronological windows from the fixed PaySim test holdout.
+              True synthetic labels are available for this offline demonstration;
+              they are not incoming live transactions or customer outcomes.
+            </p>
+            <div className="afi-replay-actions">
+              <button
+                type="button"
+                className="afi-recalibrate-btn"
+                onClick={() => {
+                  setPerformanceReplayIndex(0);
+                  setPerformanceReplayPlaying(true);
+                }}
+                disabled={
+                  performanceReplayPlaying ||
+                  performanceReplayWindows.length === 0
+                }
+              >
+                {performanceReplayWindows.length > 0 &&
+                performanceReplayIndex >= performanceReplayWindows.length - 1
+                  ? "Replay labelled holdout"
+                  : "Start labelled replay"}
+              </button>
+              {performanceReplayPlaying && (
+                <button
+                  type="button"
+                  className="afi-recalibrate-btn"
+                  onClick={() => setPerformanceReplayPlaying(false)}
+                >
+                  Pause replay
+                </button>
+              )}
+              <button
+                type="button"
+                className="afi-recalibrate-btn"
+                onClick={() => {
+                  setPerformanceReplayPlaying(false);
+                  setPerformanceReplayIndex(-1);
+                }}
+                disabled={
+                  performanceReplayIndex < 0 && !performanceReplayPlaying
+                }
+              >
+                Reset
+              </button>
+              <span aria-live="polite">
+                {performanceReplayIndex < 0
+                  ? "Replay ready"
+                  : `Processed ${performanceReplayIndex + 1} of ${performanceReplayWindows.length} windows`}
+              </span>
+            </div>
+            <div className="afi-time-window-list">
+              {visiblePerformanceReplayWindows.map(
+                (window) => (
+                  <div
+                    className="afi-time-window"
+                    key={`${window.window}-${window.step_min}`}
+                  >
+                    <strong>
+                      Replay window {window.window}: steps {window.step_min}–
+                      {window.step_max}
+                    </strong>
+                    <span>
+                      {Number(window.rows).toLocaleString()} transactions ·{" "}
+                      {Number(window.fraud_labels).toLocaleString()} fraud
+                      labels
+                    </span>
+                    <span>
+                      MEDIUM+: precision{" "}
+                      {(window.medium_or_high.precision * 100).toFixed(1)}% ·
+                      recall{" "}
+                      {(window.medium_or_high.recall * 100).toFixed(1)}% ·
+                      FPR{" "}
+                      {(window.medium_or_high.false_positive_rate * 100).toFixed(1)}%
+                    </span>
+                    <span>
+                      HIGH: precision {(window.high.precision * 100).toFixed(1)}%
+                      {" · "}recall {(window.high.recall * 100).toFixed(1)}%
+                      {" · "}FPR{" "}
+                      {(window.high.false_positive_rate * 100).toFixed(1)}%
+                    </span>
+                    <strong>
+                      Cumulative through step {window.cumulative.through_step}
+                    </strong>
+                    <span>
+                      {Number(window.cumulative.rows).toLocaleString()} labelled
+                      transactions ·{" "}
+                      {Number(window.cumulative.fraud_labels).toLocaleString()}{" "}
+                      fraud outcomes
+                    </span>
+                    <span>
+                      MEDIUM+ cumulative: precision{" "}
+                      {(window.cumulative.medium_or_high.precision * 100).toFixed(1)}%
+                      {" · "}recall{" "}
+                      {(window.cumulative.medium_or_high.recall * 100).toFixed(1)}%
+                      {" · "}FPR{" "}
+                      {(window.cumulative.medium_or_high.false_positive_rate * 100).toFixed(1)}%
+                    </span>
+                    <span>
+                      HIGH cumulative: precision{" "}
+                      {(window.cumulative.high.precision * 100).toFixed(1)}%
+                      {" · "}recall{" "}
+                      {(window.cumulative.high.recall * 100).toFixed(1)}%
+                      {" · "}FPR{" "}
+                      {(window.cumulative.high.false_positive_rate * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                ),
+              )}
+            </div>
+            <p className="afi-note">
+              Cumulative metrics are recomputed over all test rows through each
+              displayed time window. Production monitoring still requires
+              reliable delayed labels, including transactions that were not
+              flagged.
+            </p>
+          </article>
+        )}
 
         <article className="afi-card">
           <h3>Anomaly rate trend</h3>
@@ -916,17 +1226,6 @@ export default function AdaptiveIntelligence({ currentUser }) {
           </p>
         </article>
 
-        <article className="afi-card">
-          <h3>Average risk score</h3>
-          <TrendSpark
-            data={data.risk_series}
-            stroke="#d9a900"
-            label="Average risk score"
-          />
-          <p className="afi-note">
-            Mean hybrid risk score per day, scaled 0–1.
-          </p>
-        </article>
       </div>
 
       <div className="afi-signal-row">
@@ -991,7 +1290,7 @@ export default function AdaptiveIntelligence({ currentUser }) {
       </div>
 
       <div className="afi-sensitivity-row">
-        <ThresholdSensitivityVisualizer />
+        <ThresholdSensitivityVisualizer modelEvaluation={modelEvaluation} />
       </div>
 
       <div className="afi-activity-row">

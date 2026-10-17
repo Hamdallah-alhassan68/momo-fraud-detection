@@ -42,7 +42,7 @@
  ┌────────────────────────────────────────────────────────────────────┐
  │   ADMIN CONSOLE (React SPA, live over SSE)                          │
  │   LiveDashboard (KPIs · charts · risk signals · IP/device)          │
- │   Adaptive Intelligence (drift PSI · model performance · retrain)   │
+ │   Adaptive Intelligence (drift PSI · outcome feedback · baselines)   │
  │   Case management · Customer-contact simulation · Account controls │
  │   Fraud alerts · IP/device · Append-only audit logs                 │
  └────────────────────────────────────────────────────────────────────┘
@@ -54,16 +54,67 @@
 |---|---|---|
 | Post-authentication behavioural layer | PIN/OTP precedes scoring in `momo_simulator.py`; low approves, medium challenges, high blocks and opens a case; explicit behavioral/security signals set a minimum medium-risk score | Implemented in the simulator flow; direct scoring endpoint is assessment-only and does not execute transaction controls. Thresholds still require calibration against labelled data. |
 | Customer baseline (amount, timing, frequency, recipient, velocity) | Historical customer transaction records provide amount, Ghana-local transaction hour, daily frequency and per-customer recipient counts; velocity counts sessions opened within the configured window | Implemented using available prototype history and normalized to Africa/Accra time. Sparse/new-account history remains a cold-start limitation, and the small fixed demo population is not representative. |
-| Isolation Forest trained on PaySim | Runtime loads versioned model/scaler/median artifacts; `backend/scripts/train_evaluate.py` accepts a local PaySim-format CSV, samples eligible transaction rows deterministically, and evaluates on later `step` periods than training and validation; a separate 300,000-row artifact run is recorded | Reproducible temporal evaluation pipeline; supplied-data evaluation is still a synthetic-data experiment, not independent real-world evidence for the shipped model. |
+| Isolation Forest trained on PaySim | The default runtime loads the model, scaler, medians, and evaluation manifest from `backend/models/paysim-runtime`; the manifest identifies the local PaySim dataset hash, scikit-learn 1.6.1, seed 42, and chronological split. The training pipeline reproduces the run. | The active model's Isolation Forest holdout metrics are visible in Adaptive Intelligence. This is synthetic-data evidence only and does not establish real-customer performance or calibrate the separate hybrid policy. |
 | Security signals | Device, IP/network, SIM-swap, velocity and unusual-hour signals are explicitly selected through repeatable simulator scenarios; typed IP inputs are also evaluated against the demo baseline | Synthetic signals only. These inputs do not originate from a telecom or network provider and must not be described as live telemetry. |
 | Medium-risk step-up | Medium-risk sessions request a second simulated code for the demo customer's pre-registered, verified email; no verified email causes a fail-closed block | No email or SMS is actually sent. The demo code is shown in the UI and is not a secure production factor. SIM-swap scenarios must not rely on the affected phone number. |
 | Case management, account freeze, and audit trail | Analysts save an investigation decision, then explicitly mark the investigation complete; the admin case list shows new cases in red, active investigations in yellow, and completed investigations in green; resolved cases leave the active review count but remain visible in case history; account freeze/unfreeze is an independent wallet-level action (restricted to admin role) and never changes investigation status; a confirmed HIGH-risk case may be frozen without waiting for customer contact, while lower-risk freezes require recorded simulated consent; the call demo rings audibly/visually inside the admin browser; audit logs record operator identity, timestamps, previous SHA-256 hash, entry hash, and HMAC signature with automated chain verification | No real phone call or SMS is sent. Append-only triggers prevent ordinary SQL UPDATE/DELETE, and cryptographic SHA-256 hash chaining with HMAC signatures detects tampering and gap insertion. Full production deployment would further forward signed audit entries to remote immutable/WORM storage. |
-| Adaptive intelligence | PSI compares transaction-level older/recent halves (warning ≥ 0.10, critical ≥ 0.25); threshold notices activate at PSI ≥ 0.25 or 50+ new transactions. The admin-triggered/automatic action records a prototype version marker and advances transaction-volume tracking; it does not refit the detector, change scoring parameters, or reset the PSI baseline. Marker actions are audited, and unmeasured model metrics remain unset. The Threshold Sensitivity Visualizer simulates FPR vs. Recall trade-offs (0.450–0.650). | Threshold triggers, marker workflow, visualizer, and tests are implemented. Actual detector retraining/re-weighting requires a separately validated training pipeline and is not performed by this prototype endpoint. |
-| Evaluation | A seeded time-ordered 300,000-row evaluation reports ROC-AUC, PR-AUC, precision/recall with 95% Wilson intervals, F1, false-positive rate, split label counts, and model-only mean/p95 latency in JSON | Preliminary synthetic-data evidence only; not independent real-world evidence. Timing excludes HTTP and feature construction. Analyst decisions are not model precision/recall. |
+| Adaptive intelligence | PSI compares transaction-level amount and risk-score distributions against a captured reference (or, until captured, older/recent halves of a rolling sample); at least 10 values per side are required. Warnings start at 0.10 and critical alerts at 0.25. The dashboard shows fixed PaySim holdout metrics, four chronological labelled test-window slices with cumulative replay metrics, four-seed policy sensitivity, validation-split threshold sensitivity, and a 14-day trend of resolved analyst case outcomes. A volume threshold recommends baseline review after 50 new transactions. | Capturing a new reference resets the PSI comparison and volume counter, but does not retrain or change the model. The labelled performance replay is computed offline from the fixed synthetic PaySim test split; it demonstrates performance-metric calculation as labelled outcomes accumulate in chronological windows, not a live incoming evaluation stream. Analyst outcomes are selection-biased because only investigated/flagged cases are labelled; they are not model precision or recall. Only amount and risk-score distributions are used for PSI. The what-if threshold control uses validation evidence and does not alter runtime policy. |
+| Evaluation | The active PaySim model's 59,850-row later-period holdout (461 fraud labels) reports Isolation Forest precision 6.9%, recall 35.4%, and false-positive rate 3.7%. At current MEDIUM-or-higher boundary 0.45, the measured hybrid policy reports 17.3% precision, 71.4% recall, and 2.7% false-positive rate; at HIGH boundary 0.525 it reports 23.4% precision, 36.4% recall, and 0.9% false-positive rate. Relative to previous 0.4/0.5 boundaries, false-positive rates fell 52% and 27%, respectively, with associated recall trade-offs. | Preliminary synthetic-data evidence only; these figures are not real-world performance or calibration evidence. Analyst feedback is limited to resolved cases. The validation curve informs prototype thresholds; the later-period holdout evaluates the selected policy. |
 | Administrative interface | Full-width overview, responsive navigation/footer, KPI/activity view, alerts/cases, separate adaptive and audit pages; monitoring distinguishes blocked transaction count from active admin-frozen and customer-frozen account counts, and reports resolved cases and mean risk score; protected by named-user accounts (Admin, Analyst, Viewer) with PBKDF2-HMAC-SHA256 salted hashing, HMAC session tokens, 15-minute lockout after 5 failed attempts, and role-based access control (RBAC) enforced on FastAPI routes and UI controls; legacy master token supported as development fallback | Implemented for prototype readiness with 3 distinct operational roles (Admin, Analyst, Viewer). Production deployment with real customer accounts would further require corporate SSO/OIDC integration, hardware MFA (FIDO2), TLS termination, and production secrets management. |
 | MoMo simulation inputs | Recipient suggestions plus guided free-form fictional wallet, phone, and bank-reference IDs; editable, validated IPv4/IPv6 | Implemented for synthetic simulations; user-entered recipients do not connect to live wallets or networks. |
 | API framework | FastAPI routes preserve the `/api/...` surface; Uvicorn serves HTTP and the authenticated SSE endpoint | Implemented for this prototype. Run locally; protect deployment with TLS and environment-managed secrets. |
 | Regulatory traceability | Verified Bank of Ghana source metadata and official links are recorded in section 7 | Clause/page-level obligations have not been verified. The BoG Q1 2025 FinTech Sector Report is contextual, not a directive; do not treat this prototype as legally compliant or as regulatory reporting. |
+
+### SIM-swap demonstration walkthrough
+
+1. In the simulator, select a demo wallet with a verified demo email, choose a
+   wallet-to-wallet transfer, and use a modest amount, a known device, and the
+   wallet's usual IP/network. Keep other synthetic risk scenarios off.
+2. Complete the normal transaction with the displayed demo PIN. This is the
+   control run; note its decision and reasons.
+3. Repeat the same setup and click **SIM-swap demo**. This injects only the
+   `RECENT_SIM_SWAP` test flag; it does not query a telecom provider or verify
+   that a real SIM was changed.
+4. Confirm the PIN. The isolated signal should produce MEDIUM risk and request
+   the additional simulated email code. Use the UI's displayed demo code, then
+   point out the “Recent SIM change” reason and step-up decision in the result.
+   The code is not emailed or sent by SMS; avoiding SMS to the affected number
+   is part of the scenario being illustrated.
+5. Explain that this demonstrates the prototype's response to a supplied SIM
+   swap signal, not detection of a real SIM swap. Optionally use **Select all
+   risks** to show compound-risk blocking and case creation, but distinguish
+   that combined test from the single-signal SIM-swap demonstration.
+
+### Labelled-performance replay walkthrough
+
+1. Sign in as an administrator and open **Adaptive intelligence**.
+2. In **Synthetic labelled-performance replay**, click **Start labelled replay**.
+   The four chronological PaySim test windows appear in sequence; each reports
+   the current window and cumulative MEDIUM+/HIGH precision, recall, false-
+   positive rate, transaction count, and known fraud-label count.
+3. Explain that labels are known only because this is a fixed, retrospective
+   synthetic test split. This demonstrates metric calculation as labels accrue;
+   it does not replay current customer traffic, feed labels back into the
+   detector, retrain the model, or establish live customer performance.
+
+For repeated offline policy sensitivity checks against the same synthetic data
+source, with the current runtime policy cutoffs applied across each seeded
+model run:
+
+```powershell
+py -3.14 scripts/evaluate_hybrid_vs_model_only.py ..\SYINTHETIC_FINANCIAL_DATASET\paysim.csv --models-dir models --policy-config models\hybrid_model_config.json --output reports\hybrid-policy-seed-stability.json
+```
+
+This retrains no runtime artifact. Each seed is a separate fitted model; the
+report is diagnostic seed sensitivity, not a repeated test of the exact
+deployed model or independent real-world validation. The current seed model
+artifacts were serialized with scikit-learn 1.9.1; run this analysis with a
+matching scikit-learn version to avoid incompatible model-loading warnings.
+With the fixed 0.45/0.525 policy, the current four runs had MEDIUM+ FPRs of
+2.43–2.78% and recall of 60.8–70.3%; HIGH FPRs were 0.82–0.95% and recall was
+29.9–37.9%. These are ranges across separately fitted models on the same
+synthetic source, not external validation.
+
 ## 3. HTTP API surface
 
 | Method | Route | Role / Requirement | Purpose |
@@ -89,7 +140,8 @@
 | GET | `/api/admin/users` · POST `/api/admin/users` · PATCH `/api/admin/users/{id}` | Admin only | user management & credential administration |
 | GET | `/api/admin/dashboard-stats` · `/api/admin/analytics` | Viewer / Analyst / Admin | KPIs / charts data |
 | GET | `/api/admin/monitoring` | Viewer / Analyst / Admin | AFI drift + performance metrics |
-| POST | `/api/admin/model/retrain` | Admin only | record prototype baseline marker and transaction-volume count; audited, with no detector refit or PSI baseline reset |
+| POST | `/api/admin/model/baseline` | Admin only | capture an audited amount/risk reference distribution; resets the PSI comparison and volume counter, without refitting or versioning the model |
+| POST | `/api/admin/model/retrain` | Admin only (legacy route) | compatibility alias for baseline capture; it does not retrain the model |
 | GET | `/api/events/stream` | Viewer / Analyst / Admin | Server-Sent Events (live updates) |
 
 ## 4. Conventions
@@ -123,17 +175,17 @@ Copy the displayed token into the protected admin sign-in. Keep the token
 private; it is not stored in the repository and is lost when that terminal
 closes.
 
-To train and evaluate against a locally obtained PaySim-format CSV, run from
-`backend`:
+To train and evaluate a separate candidate against a locally obtained
+PaySim-format CSV, run from `backend`:
 ```
 python scripts/train_evaluate.py C:\path\to\paysim.csv --output-dir C:\path\to\model-run --seed 42
 ```
-Set `MOMO_MODEL_DIR` to the resulting directory when launching the API to use
-those artifacts only for an intentional local experiment. Evaluation artifacts
-are not calibrated runtime settings; the shipped model remains the default.
-The generated evaluation JSON records its dataset filename, seed, split,
-metrics, and model-only latency. For the supplied local synthetic dataset, a memory-bounded sample run is
-reproducible with:
+Set `MOMO_MODEL_DIR` to the resulting directory only when intentionally
+testing another artifact; the default runtime is
+`models\paysim-runtime`. Evaluation thresholds are not production calibration.
+The generated evaluation JSON records its dataset hash, seed, split, metrics,
+and scikit-learn version. For the supplied local synthetic dataset, a
+memory-bounded sample run is reproducible with:
 ```
 python scripts/train_evaluate.py ..\SYINTHETIC_FINANCIAL_DATASET\paysim.csv --sample-size 300000 --output-dir models\synthetic-paysim-temporal-300k --seed 42
 ```
@@ -181,13 +233,13 @@ are explicit work, not assumed capabilities.
 | Partial / data-access limitation | Dataset training/evaluation evidence | Reproducible chronological evaluation and multi-seed hybrid comparisons use the local synthetic `SYINTHETIC_FINANCIAL_DATASET/paysim.csv`; a 13-case synthetic policy suite also checks expected risk bands | No authorized real-customer dataset is available, and the project will not collect or use one. Treat the IEEE dataset as out of scope until its provenance, license, and permitted use are verified; its schema also does not match the PaySim evaluator. Report the lack of real-world validation as a project limitation, not as a completed validation gap. |
 | Partial | Customer behavior profiles | Amount, Ghana-local time-of-day, frequency and recipient profiles are customer-specific; timestamp offsets are normalized to Africa/Accra | Sparse/new-account history and the small fixed demo population still limit profile confidence; synthetic scenario coverage does not replace validation on representative customer populations. |
 | Closed for prototype | Controllable synthetic risk signals | Explicit deterministic scenarios replace session-ID-derived SIM-swap behavior | Verify each scenario against outcomes and document that signals remain simulated. |
-| Partial / scope limitation | Detection and latency evaluation | Chronological synthetic-dataset holdout, 13 explicit synthetic risk-band policy checks, and an in-process ASGI scoring-route benchmark are available | Current candidate has low test precision and was not applied to runtime controls. Further work within this prototype is limited to available synthetic evidence; do not claim real-world effectiveness. Scenario pass rates are not fraud-performance metrics, and production network/deployment latency needs separate measurement. |
+| Partial / scope limitation | Detection and latency evaluation | The active runtime Isolation Forest is trained on the local synthetic PaySim dataset and has a chronological holdout manifest; 13 explicit synthetic risk-band policy checks and an in-process ASGI scoring-route benchmark are available | The hybrid holdout still reports 17.3% precision at MEDIUM-or-higher and 23.4% at HIGH. Current thresholds reduce false positives versus the prior policy but are not production-calibrated, and synthetic results are not real-world effectiveness evidence. Scenario pass rates are policy checks, not fraud-performance metrics; production network/deployment latency needs separate measurement. |
 | Partial | Regulatory source traceability | An illustrative control-alignment map is listed below against the official source register | It is a prototype design aid, not a verified clause-by-clause mapping, regulatory interpretation, or compliance claim. Confirm exact provisions with a qualified compliance/legal reviewer. |
 | Closed for prototype | Production readiness: named-user authentication, RBAC, and cryptographic audit protection | Previous prototype relied on a single shared header token and unhashed audit entries without role segregation | Implemented named users with PBKDF2-HMAC-SHA256 salted hashing (100,000 iterations), HMAC bearer session tokens, 15-minute login lockout, 3 distinct RBAC roles (Admin, Analyst, Viewer) enforced across FastAPI endpoints and React UI, dynamic operator attribution, and tamper-evident SHA-256 hash chaining with continuous verification. (Note: Live telecom/bank integrations, institutional real-customer datasets, and statutory legal reviews remain explicit prototype boundaries). |
 | Closed in this update | Audit rows could previously be modified/deleted through SQL | “Immutable” was stronger than the implementation | SQLite triggers now reject ordinary `UPDATE` and `DELETE`; this is append-only within the prototype, not administrator-proof storage. |
 | Closed in this update | Drift PSI used daily averages and inclusive overlapping bins | The metric did not compare transaction populations reliably | PSI now uses transaction-level older/recent halves, non-overlapping bins, and reports insufficient data until each half has 10 observations. |
 | Closed in this update | Analyst case confirmation was labelled “precision” | The label overstated what selected case decisions establish | The dashboard now labels it “analyst-confirmed share” and explains it is not model precision/recall. |
-| Closed in this update | Adaptive monitoring previously only gave passive recommendations without operational thresholds or sensitivity modeling | Static monitoring required manual intervention without governance limits | Added drift/volume threshold notices (critical PSI ≥ 0.25 or 50+ new transactions), an optional automated prototype version-marker action with transaction-volume tracking, and an interactive Threshold Sensitivity Visualizer (0.450–0.650). The marker is not detector retraining: scoring parameters and PSI comparison baselines remain unchanged, and unmeasured performance metrics are not recorded. |
+| Closed in this update | Baseline action previously created a synthetic model-version record without changing the PSI reference; threshold sensitivity used fabricated curves | The dashboard could imply a model change and display unsupported precision/FPR estimates | Added a persisted, audited amount/risk reference distribution and a measured validation-split threshold curve; baseline capture resets PSI comparison and volume tracking without changing model version or claiming retraining. The MEDIUM/HIGH boundaries were adjusted to 0.45/0.525 using validation data to reduce holdout false-positive rates; the curve's what-if control does not change live decisions. These remain prototype controls, not BoG/ISO compliance claims. |
 
 ### 6.1 Suggested 14-week completion order
 
@@ -233,29 +285,22 @@ are explicit work, not assumed capabilities.
 
   Candidate thresholds are ranked on validation F2, which weights recall over
   precision for a prototype where anomaly flags prompt step-up/review rather
-  than automatic blocking. The selected 97.5th-percentile training-normal
-  threshold was 0.5827. On the untouched later-period test split, it flagged
-  2,381 transactions: 160 fraud and 2,221 non-fraud, for 34.7% recall
-  (95% Wilson interval 30.5%–39.2%), 6.7% precision (95% Wilson interval
-  5.8%–7.8%), 3.7% false-positive rate, ROC-AUC 0.820, and PR-AUC 0.050.
-  The test-set fraud prevalence was 0.77%. The 99th-percentile baseline flagged
-  1,287 transactions: 102 fraud and 1,185 non-fraud, for 22.1% recall,
-  7.9% precision, and 2.0% false-positive rate. This demonstrates a
-  recall-versus-friction trade-off; the selected setting still produces many
-  false positives and is unsuitable for runtime adoption.
+  than automatic blocking. The active runtime model uses the 97.5th-percentile
+  training-normal threshold of 0.5883. On the untouched later-period test
+  split, it flagged 2,358 transactions: 163 fraud and 2,195 non-fraud, for
+  35.4% recall (95% Wilson interval 31.1%–39.8%), 6.9% precision (95% Wilson
+  interval 6.0%–8.0%), 3.7% false-positive rate, ROC-AUC 0.822, and PR-AUC
+  0.052. The test-set fraud prevalence was 0.77%. This demonstrates that the
+  PaySim-trained Isolation Forest itself still produces many false positives.
 
-  Full candidate metrics, confidence intervals, data hash, and split ranges are
-  recorded in `backend/models/synthetic-paysim-temporal-300k/evaluation.json`;
-  its model artifacts are separate from the shipped model. The previous
-  random-stratified run remains in `backend/models/synthetic-paysim-100k/` as
-  historical evidence and is superseded by this time-ordered evaluation.
-  Wilson intervals quantify approximate test-set binomial uncertainty only;
-  they do not account for temporal clustering, distribution shift, sampling
-  choices, or synthetic-data limitations.
-  The shipped model's training-data provenance is unverified, so this result
-  must not be described as independent evidence for that model. Runtime hybrid
-  thresholds and model artifacts were not changed. No real-world performance
-  or compliance claim is made.
+  The active artifacts and their evaluation manifest are in
+  `backend/models/paysim-runtime/`. The dataset hash, seed, library version,
+  split ranges, confidence intervals, and holdout metrics are recorded with
+  the artifacts. Wilson intervals quantify approximate test-set binomial
+  uncertainty only; they do not account for temporal clustering, distribution
+  shift, sampling choices, or synthetic-data limitations. These Isolation
+  Forest metrics do not calibrate the hybrid policy or establish real-world
+  performance.
 
   To check sensitivity to deterministic sampling/model seeds, the same temporal
   evaluation was repeated with seeds 7, 21, and 99 in addition to seed 42.
@@ -277,8 +322,10 @@ are explicit work, not assumed capabilities.
   This uses the per-seed temporal training artifacts and the configured rule
   weights, amount threshold, and novel-recipient floor. For both model-only and
   hybrid scores, candidate thresholds are selected on validation data only by
-  the same F2 policy. It reports the configured 0.3 boundary (MEDIUM-or-HIGH)
-  and 0.5 boundary (HIGH) as well as same-numeric-cutoff model-only comparisons.
+  the same F2 policy. This archived report uses an older per-seed configuration
+  with a 0.3 MEDIUM-or-HIGH boundary and a 0.5 HIGH boundary; those are not the
+  current runtime boundaries. It also includes same-numeric-cutoff model-only
+  comparisons.
   Per-transaction-type confusion counts and metrics are included. PaySim does
   not provide the app's device, network, SIM-swap, customer-pattern,
   unusual-hour, velocity, or frequency signals, so those rules are not treated
@@ -286,8 +333,9 @@ are explicit work, not assumed capabilities.
 
   In the four-seed mean, validation-selected hybrid candidates reached 21.1%
   precision, 43.7% recall, and 1.45% false-positive rate, versus 7.0%, 33.0%,
-  and 3.87% for validation-selected model-only candidates. At the configured
-  hybrid HIGH boundary (0.5), the averages were 21.1% precision, 41.5% recall,
+  and 3.87% for validation-selected model-only candidates. These are
+  historical per-seed experiments, not current runtime-policy metrics. At the
+  archived hybrid HIGH boundary (0.5), the averages were 21.1% precision, 41.5% recall,
   and 1.23% false-positive rate. The MEDIUM-or-HIGH boundary (0.3) flagged an
   average of 41,445 transactions per test split, with 96.6% recall but only
   1.08% precision and a 69.7% false-positive rate. At the HIGH boundary by
@@ -300,7 +348,8 @@ are explicit work, not assumed capabilities.
   scale. Results suggest the balance/recipient rules may add useful signal on
   these synthetic samples, while the 0.3 alert volume demonstrates substantial
   operational-noise risk. They are not comparable to real operational
-  detection and remain insufficient for changing runtime controls. Seed-level
+  detection; they are not current runtime-policy metrics and are insufficient
+  for a real-world claim. Seed-level
   metrics are in `backend/reports/synthetic-paysim-hybrid-comparison.json`.
 
   These repeated runs are sensitivity checks on samples from the same synthetic
@@ -320,8 +369,8 @@ The source text and exact obligations still require compliance/legal review.
 |---|---|---|
 | Risk-based transaction monitoring | Hybrid risk scoring with behavioral signals; medium creates an alert and high blocks/opens a case | Scores and signals are synthetic; thresholds need independent validation. |
 | Suspicious activity review and escalation | Fraud alerts, analyst case workflow, investigation outcome, and audit events | Demonstrates a workflow only; it does not submit a regulatory report or determine a legal reporting duty. |
-| Record keeping and traceability | Transaction, risk-assessment, case, and append-only audit records | Local SQLite protections are not administrator-proof retention or tamper-evident production storage. |
-| Access control and security monitoring | Shared admin token, protected admin APIs, and authenticated event stream | Prototype-only access control; no named-user roles, MFA, managed secrets, or production hardening. |
+| Record keeping and traceability | Transaction, risk-assessment, case, and append-only audit records with SHA-256 hash chaining and HMAC signatures | Provides tamper evidence within the local prototype; it is not administrator-proof retention or independently managed immutable/WORM storage. |
+| Access control and security monitoring | Named Admin, Analyst, and Viewer accounts; PBKDF2-HMAC-SHA256 password hashing; HMAC session tokens; role-based API authorization; authenticated event stream | Prototype controls only; production deployment still requires managed secrets, TLS, stronger MFA, and security hardening. |
 | Customer authentication and fraud response | PIN/OTP simulation, verified-email step-up simulation for medium risk, transaction block, and account/session freeze | Demo credentials and step-up codes are exposed to the simulator UI; no real identity provider, email, or SMS delivery is integrated. |
 
 The links below are official Bank of Ghana source pages/PDFs. Source

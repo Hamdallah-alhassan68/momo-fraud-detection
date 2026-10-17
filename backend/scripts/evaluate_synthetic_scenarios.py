@@ -61,7 +61,7 @@ SCENARIOS = {
     "NEW_RECIPIENT": {
         "transaction": {},
         "dest_previous_count": 0,
-        "expected_risk_level": "MEDIUM",
+        "expected_risk_level": "LOW",
     },
     "HIGH_BALANCE_SHARE_ONLY": {
         "transaction": {

@@ -39,7 +39,7 @@ from database.database import (
     VALID_ADMIN_ROLES,
 )
 from services import auth, events
-from services.adaptive_intelligence import build_monitoring, retrain_or_update_model
+from services.adaptive_intelligence import build_monitoring, record_drift_baseline
 from services.fraud_detector import fraud_detector
 from services.momo_simulator import (
     freeze_account as momo_freeze,
@@ -511,8 +511,9 @@ def admin_monitoring():
         ) from error
 
 
-@app.post("/api/admin/model/retrain")
-def admin_model_retrain(
+@app.post("/api/admin/model/baseline")
+@app.post("/api/admin/model/retrain", include_in_schema=False)
+def admin_model_baseline(
     payload: dict = Body(default=None),
     current_user: dict = Depends(require_admin),
 ):
@@ -520,11 +521,11 @@ def admin_model_retrain(
         username = current_user.get("username", "admin")
         if payload and payload.get("triggered_by"):
             username = f"{username}:{payload.get('triggered_by')}"
-        return retrain_or_update_model(triggered_by=username)
+        return record_drift_baseline(triggered_by=username)
     except Exception as error:
-        logger.exception("Unable to record prototype baseline marker")
+        logger.exception("Unable to capture model drift baseline")
         raise HTTPException(
-            status_code=500, detail="Failed to record prototype baseline marker."
+            status_code=500, detail="Failed to capture model drift baseline."
         ) from error
 
 
