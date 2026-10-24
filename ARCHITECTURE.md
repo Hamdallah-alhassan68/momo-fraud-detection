@@ -4,6 +4,10 @@
 > dashboard; several design requirements remain partially implemented or
 > unverified. See the gap analysis in section 6.
 
+For the project’s full system-analysis hand-in—use-case, activity, sequence,
+class, database/ERD, misuse-case, and STRIDE threat diagrams—see
+[SYSTEM_ANALYSIS_AND_DESIGN.md](./SYSTEM_ANALYSIS_AND_DESIGN.md).
+
 ## 1. Architecture overview
 
 ```
