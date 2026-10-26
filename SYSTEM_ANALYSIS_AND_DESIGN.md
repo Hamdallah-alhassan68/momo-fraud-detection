@@ -13,6 +13,11 @@ viewers. Use-case and misuse-case views use UML-style actors, boundaries, and
 relationships; the database design is an entity-relationship diagram (ERD)
 alongside the UML class diagram.
 
+The operational database ERD below is distinct from the proposed 3NF model for
+the PaySim-format training dataset. See
+[DATA_NORMALIZATION_AND_ERD.md](./DATA_NORMALIZATION_AND_ERD.md) for that
+dataset's field mapping, normalization rationale, ERD, and reference DDL.
+
 ## 1. System analysis
 
 ### 1.1 Problem and purpose

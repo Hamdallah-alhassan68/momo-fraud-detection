@@ -7,6 +7,8 @@
 For the project’s full system-analysis hand-in—use-case, activity, sequence,
 class, database/ERD, misuse-case, and STRIDE threat diagrams—see
 [SYSTEM_ANALYSIS_AND_DESIGN.md](./SYSTEM_ANALYSIS_AND_DESIGN.md).
+For the proposed 3NF design and ERD of the PaySim-format training CSV, see
+[DATA_NORMALIZATION_AND_ERD.md](./DATA_NORMALIZATION_AND_ERD.md).
 
 ## 1. Architecture overview
 
