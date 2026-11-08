@@ -9,6 +9,7 @@ from collections import Counter
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import json
+from statistics import median
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -227,6 +228,36 @@ def initialize_database():
             velocity_spike INTEGER DEFAULT 0,
 
             frequency_spike INTEGER DEFAULT 0,
+
+            location_mismatch INTEGER DEFAULT 0,
+
+            impossible_travel INTEGER DEFAULT 0,
+
+            amount_deviation INTEGER DEFAULT 0,
+
+            unusual_hour INTEGER DEFAULT 0,
+
+            cold_start INTEGER DEFAULT 0,
+
+            new_account INTEGER DEFAULT 0,
+
+            device_age_days REAL DEFAULT 0,
+
+            velocity_5m_count INTEGER DEFAULT 0,
+
+            velocity_5m_amount REAL DEFAULT 0,
+
+            velocity_1h_count INTEGER DEFAULT 0,
+
+            velocity_1h_amount REAL DEFAULT 0,
+
+            recipient_burst INTEGER DEFAULT 0,
+
+            recipient_5m_count INTEGER DEFAULT 0,
+
+            recipient_5m_amount REAL DEFAULT 0,
+
+            risk_signals TEXT,
 
             scenario TEXT DEFAULT 'NORMAL',
 
@@ -570,6 +601,21 @@ def initialize_database():
     )
     _ensure_column(connection, "transactions", "scenario", "TEXT DEFAULT 'NORMAL'")
     _ensure_column(connection, "transactions", "frequency_spike", "INTEGER DEFAULT 0")
+    _ensure_column(connection, "transactions", "location_mismatch", "INTEGER DEFAULT 0")
+    _ensure_column(connection, "transactions", "impossible_travel", "INTEGER DEFAULT 0")
+    _ensure_column(connection, "transactions", "amount_deviation", "INTEGER DEFAULT 0")
+    _ensure_column(connection, "transactions", "unusual_hour", "INTEGER DEFAULT 0")
+    _ensure_column(connection, "transactions", "cold_start", "INTEGER DEFAULT 0")
+    _ensure_column(connection, "transactions", "new_account", "INTEGER DEFAULT 0")
+    _ensure_column(connection, "transactions", "device_age_days", "REAL DEFAULT 0")
+    _ensure_column(connection, "transactions", "velocity_5m_count", "INTEGER DEFAULT 0")
+    _ensure_column(connection, "transactions", "velocity_5m_amount", "REAL DEFAULT 0")
+    _ensure_column(connection, "transactions", "velocity_1h_count", "INTEGER DEFAULT 0")
+    _ensure_column(connection, "transactions", "velocity_1h_amount", "REAL DEFAULT 0")
+    _ensure_column(connection, "transactions", "recipient_burst", "INTEGER DEFAULT 0")
+    _ensure_column(connection, "transactions", "recipient_5m_count", "INTEGER DEFAULT 0")
+    _ensure_column(connection, "transactions", "recipient_5m_amount", "REAL DEFAULT 0")
+    _ensure_column(connection, "transactions", "risk_signals", "TEXT")
     _ensure_column(connection, "fraud_cases", "contact_channel", "TEXT")
     _ensure_column(connection, "fraud_cases", "contact_outcome", "TEXT")
     _ensure_column(connection, "fraud_cases", "contact_at", "TEXT")
@@ -584,6 +630,8 @@ def initialize_database():
     _ensure_column(connection, "transactions", "location_longitude", "REAL")
     _ensure_column(connection, "momo_sessions", "location_latitude", "REAL")
     _ensure_column(connection, "momo_sessions", "location_longitude", "REAL")
+    _ensure_column(connection, "momo_sessions", "risk_signals", "TEXT")
+    _ensure_column(connection, "momo_sessions", "assessment_reasons", "TEXT")
     _ensure_column(connection, "audit_logs", "prev_hash", "TEXT")
     _ensure_column(connection, "audit_logs", "entry_hash", "TEXT")
     _ensure_column(connection, "audit_logs", "hmac_signature", "TEXT")
@@ -747,6 +795,21 @@ def create_transaction(transaction):
                 recent_sim_swap,
                 velocity_spike,
                 frequency_spike,
+                location_mismatch,
+                impossible_travel,
+                amount_deviation,
+                unusual_hour,
+                cold_start,
+                new_account,
+                device_age_days,
+                velocity_5m_count,
+                velocity_5m_amount,
+                velocity_1h_count,
+                velocity_1h_amount,
+                recipient_burst,
+                recipient_5m_count,
+                recipient_5m_amount,
+                risk_signals,
                 scenario,
                 timestamp,
                 created_at,
@@ -759,7 +822,7 @@ def create_transaction(transaction):
                 location_latitude,
                 location_longitude
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 transaction["transaction_reference"],
@@ -777,6 +840,21 @@ def create_transaction(transaction):
                 int(transaction.get("recent_sim_swap", False)),
                 int(transaction.get("velocity_spike", False)),
                 int(transaction.get("frequency_spike", False)),
+                int(transaction.get("location_mismatch", False)),
+                int(transaction.get("impossible_travel", False)),
+                int(transaction.get("amount_deviation", False)),
+                int(transaction.get("unusual_hour", False)),
+                int(transaction.get("cold_start", False)),
+                int(transaction.get("new_account", False)),
+                float(transaction.get("device_age_days", 0)),
+                int(transaction.get("velocity_5m_count", 0)),
+                float(transaction.get("velocity_5m_amount", 0)),
+                int(transaction.get("velocity_1h_count", 0)),
+                float(transaction.get("velocity_1h_amount", 0)),
+                int(transaction.get("recipient_burst", False)),
+                int(transaction.get("recipient_5m_count", 0)),
+                float(transaction.get("recipient_5m_amount", 0)),
+                json.dumps(transaction.get("risk_signals", {}), sort_keys=True),
                 transaction.get("scenario", "NORMAL"),
                 transaction.get("timestamp", now),
                 now,
@@ -1638,6 +1716,52 @@ def count_velocity_sessions(customer_ref, window_minutes=3):
         connection.close()
 
 
+def get_customer_velocity_summary(customer_ref):
+    """Return initiated transaction counts and amounts over 5-minute/1-hour windows."""
+    now = datetime.now(timezone.utc)
+    connection = get_connection()
+    try:
+        summary = {}
+        for label, minutes in (("5m", 5), ("1h", 60)):
+            since = (now - timedelta(minutes=minutes)).isoformat()
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS amount
+                FROM momo_sessions
+                WHERE customer_ref = ? AND created_at >= ?
+                """,
+                (customer_ref, since),
+            ).fetchone()
+            summary[f"{label}_count"] = int(row["count"] or 0)
+            summary[f"{label}_amount"] = float(row["amount"] or 0)
+        return summary
+    finally:
+        connection.close()
+
+
+def get_recipient_velocity_summary(customer_ref, recipient_ref, window_minutes=5):
+    """Return attempts/count and amount for one recipient in a short time window."""
+    since = (
+        datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    ).isoformat()
+    connection = get_connection()
+    try:
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS amount
+            FROM momo_sessions
+            WHERE customer_ref = ? AND recipient = ? AND created_at >= ?
+            """,
+            (customer_ref, recipient_ref, since),
+        ).fetchone()
+        return {
+            "count": int(row["count"] or 0),
+            "amount": float(row["amount"] or 0),
+        }
+    finally:
+        connection.close()
+
+
 def has_pending_mtn_transfer(customer_ref):
     """Return whether a wallet already has an unresolved MTN transfer."""
     connection = get_connection()
@@ -1655,6 +1779,17 @@ def has_pending_mtn_transfer(customer_ref):
             (customer_ref,),
         )
         return cursor.fetchone() is not None
+    finally:
+        connection.close()
+
+
+def get_pending_step_up_count():
+    connection = get_connection()
+    try:
+        row = connection.execute(
+            "SELECT COUNT(*) AS count FROM momo_sessions WHERE status = 'STEP_UP'"
+        ).fetchone()
+        return int(row["count"] or 0)
     finally:
         connection.close()
 
@@ -1783,6 +1918,9 @@ def get_analytics_data(granularity="minute"):
             "blocked": _count(
                 "SELECT COUNT(*) FROM transactions WHERE status = 'BLOCKED'"
             ),
+            "step_up_pending": _count(
+                "SELECT COUNT(*) FROM momo_sessions WHERE status = 'STEP_UP'"
+            ),
             "frozen_accounts": _count(
                 "SELECT COUNT(*) FROM account_status WHERE frozen = 1"
             ),
@@ -1813,29 +1951,7 @@ def get_analytics_data(granularity="minute"):
         # ----------------------------------------------
         # Recent transactions (with IP + device for investigation)
         # ----------------------------------------------
-        cursor.execute(
-            """
-            SELECT
-                t.id,
-                t.transaction_reference,
-                t.amount,
-                t.transaction_type,
-                t.origin_account,
-                t.destination_account,
-                t.ip_address,
-                t.device_id,
-                t.status,
-                t.created_at,
-                r.risk_level,
-                r.risk_score
-            FROM transactions t
-            LEFT JOIN risk_assessments r
-                ON r.transaction_id = t.id
-            ORDER BY t.created_at DESC
-            LIMIT 12
-            """
-        )
-        data["recent_transactions"] = [dict(row) for row in cursor.fetchall()]
+        data["recent_transactions"] = get_recent_transactions_feed(limit=12)
 
         return data
 
@@ -2218,9 +2334,17 @@ def get_customer_baseline(customer_ref):
                     last_24h_count += 1
             except (ValueError, AttributeError):
                 continue
+        amount_median = median(amounts) if amounts else 0.0
+        median_absolute_deviation = (
+            median(abs(amount - amount_median) for amount in amounts)
+            if amounts
+            else 0.0
+        )
         return {
             "count": len(rows),
             "avg_amount": sum(amounts) / len(amounts) if amounts else 0.0,
+            "median_amount": amount_median,
+            "median_absolute_deviation": median_absolute_deviation,
             "max_amount": max(amounts, default=0.0),
             "usual_hours": [
                 hour
@@ -2270,7 +2394,7 @@ def get_customer_security_history(customer_ref):
         transaction_rows = connection.execute(
             """
             SELECT DISTINCT device_id, ip_address,
-                   location_latitude, location_longitude
+                   location_latitude, location_longitude, timestamp
             FROM transactions
             WHERE origin_account = ?
               AND status IN ('COMPLETED', 'APPROVED')
@@ -2279,27 +2403,81 @@ def get_customer_security_history(customer_ref):
         ).fetchall()
         signal_rows = connection.execute(
             """
-            SELECT DISTINCT device_id, ip_address,
-                   location_latitude, location_longitude
+            SELECT device_id, ip_address, location_latitude,
+                   location_longitude, trusted, observed_at
             FROM customer_security_signals
-            WHERE customer_ref = ? AND trusted = 1
+            WHERE customer_ref = ?
             """,
             (customer_ref,),
         ).fetchall()
-        rows = list(transaction_rows) + list(signal_rows)
+        trusted_signal_rows = [
+            row for row in signal_rows if row["trusted"]
+        ]
+        trusted_rows = list(transaction_rows) + trusted_signal_rows
+        all_rows = list(transaction_rows) + list(signal_rows)
+        first_seen_by_device = {}
+        for row in all_rows:
+            device = row["device_id"]
+            observed_at = row["observed_at"] if "observed_at" in row.keys() else row["timestamp"]
+            if device and observed_at:
+                first_seen_by_device[device] = min(
+                    observed_at,
+                    first_seen_by_device.get(device, observed_at),
+                )
+        account_created = connection.execute(
+            """
+            SELECT created_at
+            FROM sandbox_customer_profiles
+            WHERE phone_number = ? OR customer_ref = ?
+            """,
+            (customer_ref, customer_ref),
+        ).fetchone()
+        trusted_locations = [
+            {
+                "latitude": row["location_latitude"],
+                "longitude": row["location_longitude"],
+                "observed_at": (
+                    row["observed_at"]
+                    if "observed_at" in row.keys()
+                    else row["timestamp"]
+                ),
+            }
+            for row in trusted_rows
+            if row["location_latitude"] is not None
+            and row["location_longitude"] is not None
+        ]
+        transaction_created = connection.execute(
+            """
+            SELECT MIN(timestamp) AS created_at
+            FROM transactions
+            WHERE origin_account = ? AND status IN ('COMPLETED', 'APPROVED')
+            """,
+            (customer_ref,),
+        ).fetchone()
+        account_created_at = (
+            account_created["created_at"]
+            if account_created
+            else transaction_created["created_at"]
+        )
         return {
             "device_ids": {
-                row["device_id"] for row in rows if row["device_id"]
+                row["device_id"] for row in trusted_rows if row["device_id"]
+            },
+            "seen_device_ids": {
+                row["device_id"] for row in all_rows if row["device_id"]
             },
             "ip_addresses": {
-                row["ip_address"] for row in rows if row["ip_address"]
+                row["ip_address"] for row in trusted_rows if row["ip_address"]
             },
             "locations": [
                 (row["location_latitude"], row["location_longitude"])
-                for row in rows
+                for row in trusted_rows
                 if row["location_latitude"] is not None
                 and row["location_longitude"] is not None
             ],
+            "trusted_locations": trusted_locations,
+            "device_first_seen": first_seen_by_device,
+            "account_created_at": account_created_at,
         }
     finally:
         connection.close()
@@ -2314,6 +2492,7 @@ def create_sandbox_customer_profile(
     email,
     pin_hash,
     balance=10000.0,
+    email_verified=False,
 ):
     """Persist a sandbox-only profile with hashed identity and PIN values."""
     connection = get_connection()
@@ -2323,7 +2502,7 @@ def create_sandbox_customer_profile(
             INSERT INTO sandbox_customer_profiles (
                 phone_number, customer_ref, full_name, id_type, id_hash,
                 email, email_verified, pin_hash, balance, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'ACTIVE', ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
             """,
             (
                 phone_number,
@@ -2332,6 +2511,7 @@ def create_sandbox_customer_profile(
                 id_type,
                 id_hash,
                 email,
+                int(bool(email_verified)),
                 pin_hash,
                 float(balance),
                 datetime.now(timezone.utc).isoformat(),
@@ -2458,6 +2638,27 @@ def get_analyst_decision_counts():
             for row in cursor.fetchall()
         }
 
+    finally:
+        connection.close()
+
+
+def get_resolved_analyst_label_counts():
+    """Return analyst outcomes from resolved cases only, for candidate labels."""
+    connection = get_connection()
+    try:
+        rows = connection.execute(
+            """
+            SELECT analyst_decision, COUNT(*) AS count
+            FROM fraud_cases
+            WHERE case_status = 'RESOLVED'
+              AND analyst_decision IN ('FRAUD_CONFIRMED', 'LEGITIMATE')
+            GROUP BY analyst_decision
+            """
+        ).fetchall()
+        return {
+            row["analyst_decision"]: int(row["count"])
+            for row in rows
+        }
     finally:
         connection.close()
 
@@ -2724,6 +2925,26 @@ def get_latest_model_version():
         connection.close()
 
 
+def get_model_version_history(limit=10):
+    """Return deployed model records without synthetic baseline markers."""
+    connection = get_connection()
+    try:
+        rows = connection.execute(
+            """
+            SELECT version, model_type, roc_auc, pr_auc, precision_score,
+                   recall_score, f1_score, status, samples_count, created_at
+            FROM model_versions
+            WHERE model_type != 'PrototypeBaselineMarker'
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
 def get_recent_transactions_feed(limit=5):
     """Retrieve the most recent transactions with their risk assessments for live monitoring."""
     connection = get_connection()
@@ -2742,7 +2963,11 @@ def get_recent_transactions_feed(limit=5):
                 t.created_at,
                 r.risk_score,
                 r.risk_level,
-                r.decision
+                r.decision,
+                r.reasons,
+                t.risk_signals,
+                t.ip_address,
+                t.device_id
             FROM transactions t
             LEFT JOIN risk_assessments r ON r.transaction_id = t.id
             ORDER BY t.id DESC
@@ -2750,7 +2975,41 @@ def get_recent_transactions_feed(limit=5):
             """,
             (limit,)
         )
-        rows = cursor.fetchall()
-        return [dict(r) for r in rows]
+        rows = [dict(row) for row in cursor.fetchall()]
+        cursor.execute(
+            """
+            SELECT
+                -s.id AS id,
+                s.session_id AS transaction_reference,
+                s.amount,
+                s.transaction_type,
+                s.customer_ref AS origin_account,
+                s.recipient AS destination_account,
+                'STEP_UP_REQUIRED' AS status,
+                s.created_at,
+                s.risk_score,
+                s.risk_level,
+                'STEP-UP VERIFICATION' AS decision,
+                s.assessment_reasons AS reasons,
+                s.risk_signals,
+                s.ip_address,
+                s.device_id
+            FROM momo_sessions s
+            WHERE s.status = 'STEP_UP' AND s.risk_score IS NOT NULL
+            ORDER BY s.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows.extend(dict(row) for row in cursor.fetchall())
+        rows.sort(key=lambda row: row.get("created_at") or "", reverse=True)
+        for row in rows:
+            for key in ("reasons", "risk_signals"):
+                raw = row.get(key)
+                try:
+                    row[key] = json.loads(raw) if raw else []
+                except (json.JSONDecodeError, TypeError):
+                    row[key] = []
+        return rows[:limit]
     finally:
         connection.close()

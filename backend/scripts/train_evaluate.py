@@ -12,6 +12,7 @@ import json
 import sys
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
@@ -619,6 +620,9 @@ def train_and_evaluate(csv_path, output_dir, seed=42, sample_size=None):
         ),
         "latency_measurement": "decision_function only; excludes HTTP and feature construction",
     }
+
+    metrics["training_run_at_utc"] = datetime.now(timezone.utc).isoformat()
+    metrics["training_pipeline"] = "offline_paysim_chronological"
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

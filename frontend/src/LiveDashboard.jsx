@@ -15,6 +15,30 @@ function currency(value) {
   })}`;
 }
 
+const SIGNAL_LABELS = {
+  device_change: "New device",
+  new_account: "New account",
+  cold_start: "Limited history",
+  ip_network_mismatch: "Network mismatch",
+  location_mismatch: "Location change",
+  impossible_travel: "Impossible travel",
+  recipient_novel: "New recipient",
+  recipient_burst: "Recipient velocity",
+  velocity_spike: "Velocity spike",
+  frequency_spike: "Frequency spike",
+  amount_deviation: "Unusual amount",
+  unusual_hour: "Unusual time",
+  recent_sim_swap: "SIM-swap test",
+};
+
+function RiskSignalSummary({ signals }) {
+  if (!signals || Array.isArray(signals)) return "—";
+  const active = Object.entries(signals)
+    .filter(([key, value]) => SIGNAL_LABELS[key] && value === true)
+    .map(([key]) => SIGNAL_LABELS[key]);
+  return active.length ? active.join(", ") : "No elevated signals";
+}
+
 const RISK_COLORS = { HIGH: "#dc2626", MEDIUM: "#d97706", LOW: "#16a34a" };
 
 function DonutChart({ distribution }) {
@@ -362,6 +386,11 @@ export default function LiveDashboard() {
       tone: "slate",
     },
     {
+      label: "Awaiting Step-up",
+      value: Number(totals.step_up_pending || 0),
+      tone: "amber",
+    },
+    {
       label: "Admin-Frozen",
       value: Number(totals.admin_frozen_accounts || 0),
       tone: "rose",
@@ -446,7 +475,7 @@ export default function LiveDashboard() {
       <div className="recent-panel">
         <div className="panel-heading">
           <h2>Recent transactions</h2>
-          <p>Live feed — includes IP &amp; device used for each transaction.</p>
+          <p>Live feed — security signals are summarized without exposing raw device or network identifiers.</p>
         </div>
 
         <div className="table-wrapper">
@@ -461,14 +490,13 @@ export default function LiveDashboard() {
                 <th>Amount</th>
                 <th>Risk Score</th>
                 <th>Status</th>
-                <th>IP Address</th>
-                <th>Device</th>
+                <th>Risk signals</th>
               </tr>
             </thead>
             <tbody>
               {recent.length === 0 ? (
                 <tr>
-                  <td colSpan="8" className="empty-cell">No transactions yet.</td>
+                  <td colSpan="9" className="empty-cell">No transactions yet.</td>
                 </tr>
               ) : (
                 recent.map((row) => (
@@ -490,8 +518,7 @@ export default function LiveDashboard() {
                         {row.status}
                       </span>
                     </td>
-                    <td className="mono">{row.ip_address || "—"}</td>
-                    <td className="mono">{row.device_id || "—"}</td>
+                    <td><RiskSignalSummary signals={row.risk_signals} /></td>
                   </tr>
                 ))
               )}

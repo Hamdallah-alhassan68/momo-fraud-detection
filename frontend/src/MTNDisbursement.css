@@ -651,13 +651,6 @@
   border-color: #fde68a;
 }
 
-.email-verification-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 8px;
-}
-
 .text-button {
   align-self: flex-start;
   padding: 4px 0;

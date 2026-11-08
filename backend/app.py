@@ -1,6 +1,7 @@
 """FastAPI application for the synthetic MoMo fraud-control prototype."""
 
 import json
+import ipaddress
 import logging
 import os
 import queue
@@ -94,7 +95,6 @@ app = FastAPI(
 )
 
 _EMAIL_VERIFICATION_CHALLENGES = {}
-_SANDBOX_REGISTRATION_CHALLENGES = {}
 
 frontend_env = os.getenv("FRONTEND_ORIGINS", "")
 origins = [
@@ -562,7 +562,7 @@ def momo_customer_login(
             customer_ref=customer_phone,
             event_type="LOGIN",
             device_id=device_id,
-            ip_address=request.client.host if request.client else "127.0.0.1",
+            ip_address=_client_ip(request),
             location_latitude=location[0] if location else None,
             location_longitude=location[1] if location else None,
         )
@@ -633,8 +633,50 @@ def _validate_customer_location(body, required):
     return round(latitude, 2), round(longitude, 2)
 
 
+def _client_ip(request: Request) -> str | None:
+    """Resolve the client address only through explicitly trusted proxy hops."""
+    peer = request.client.host if request.client else "127.0.0.1"
+    try:
+        peer_address = ipaddress.ip_address(peer)
+    except ValueError:
+        return None
+
+    trusted_proxy_values = [
+        item.strip()
+        for item in os.getenv("TRUSTED_PROXY_IPS", "").split(",")
+        if item.strip()
+    ]
+    try:
+        trusted_networks = [
+            ipaddress.ip_network(value, strict=False)
+            for value in trusted_proxy_values
+        ]
+    except ValueError as error:
+        logger.exception("TRUSTED_PROXY_IPS contains an invalid address or network")
+        raise HTTPException(
+            status_code=500,
+            detail="Backend trusted-proxy configuration is invalid.",
+        ) from error
+
+    if not any(peer_address in network for network in trusted_networks):
+        return str(peer_address)
+
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    forwarded_addresses = []
+    for candidate in forwarded_for.split(","):
+        try:
+            forwarded_addresses.append(ipaddress.ip_address(candidate.strip()))
+        except ValueError:
+            continue
+    for candidate in reversed(forwarded_addresses):
+        if not any(candidate in network for network in trusted_networks):
+            return str(candidate)
+    return str(forwarded_addresses[0]) if forwarded_addresses else str(peer_address)
+
+
+@app.post("/api/momo/customer/register")
 @app.post("/api/momo/customer/register/challenge")
-def momo_customer_register_challenge(
+def momo_customer_register(
     request: Request,
     body: dict = Body(...),
 ):
@@ -671,83 +713,26 @@ def momo_customer_register_challenge(
             detail="This number already has a sandbox wallet. Sign in instead.",
         )
 
-    now = datetime.now(timezone.utc)
-    current = _SANDBOX_REGISTRATION_CHALLENGES.get(phone)
-    if current and current["resend_after"] > now:
-        raise HTTPException(
-            status_code=429,
-            detail="Wait before requesting another registration code.",
-        )
-    code = f"{secrets.randbelow(1_000_000):06d}"
-    if not send_email_verification_email(email_address, code):
-        raise HTTPException(
-            status_code=503,
-            detail="We could not deliver the verification email. Please try again later.",
-        )
-    _SANDBOX_REGISTRATION_CHALLENGES[phone] = {
-        "full_name": full_name,
-        "id_type": id_type,
-        "id_hash": auth.hash_password(id_number),
-        "email": email_address,
-        "pin_hash": auth.hash_password(pin),
-        "code": code,
-        "expires_at": now + timedelta(minutes=10),
-        "resend_after": now + timedelta(seconds=60),
-        "attempts": 0,
-        "device_id": device_id,
-        "ip_address": request.client.host if request.client else "127.0.0.1",
-        "location": location,
-    }
-    return {
-        "message": "A verification code was sent to your email address.",
-        "masked_email": _mask_customer_email(email_address),
-    }
-
-
-@app.post("/api/momo/customer/register/verify")
-def momo_customer_register_verify(
-    body: dict = Body(...),
-):
-    if get_mtn_disbursement_configuration_status()["environment"] != "sandbox":
-        raise HTTPException(
-            status_code=403,
-            detail="Sandbox customer enrollment is disabled outside MTN sandbox mode.",
-        )
-    phone = _normalize_sandbox_phone(body.get("phone_number"))
-    challenge = _SANDBOX_REGISTRATION_CHALLENGES.get(phone)
-    if not challenge or challenge["expires_at"] <= datetime.now(timezone.utc):
-        _SANDBOX_REGISTRATION_CHALLENGES.pop(phone, None)
-        raise HTTPException(
-            status_code=400,
-            detail="Registration code is missing or expired. Start enrollment again.",
-        )
-    code = str(body.get("code") or "").strip()
-    if not secrets.compare_digest(code, challenge["code"]):
-        challenge["attempts"] += 1
-        if challenge["attempts"] >= 5:
-            _SANDBOX_REGISTRATION_CHALLENGES.pop(phone, None)
-        raise HTTPException(status_code=400, detail="Incorrect email verification code.")
     try:
         create_sandbox_customer_profile(
             phone_number=phone,
             customer_ref=phone,
-            full_name=challenge["full_name"],
-            id_type=challenge["id_type"],
-            id_hash=challenge["id_hash"],
-            email=challenge["email"],
-            pin_hash=challenge["pin_hash"],
+            full_name=full_name,
+            id_type=id_type,
+            id_hash=auth.hash_password(id_number),
+            email=email_address,
+            pin_hash=auth.hash_password(pin),
         )
         record_customer_security_signal(
             customer_ref=phone,
             event_type="ENROLLMENT",
-            device_id=challenge["device_id"],
-            ip_address=challenge["ip_address"],
-            location_latitude=challenge["location"][0],
-            location_longitude=challenge["location"][1],
+            device_id=device_id,
+            ip_address=_client_ip(request),
+            location_latitude=location[0],
+            location_longitude=location[1],
             trusted=True,
         )
     except sqlite3.IntegrityError as error:
-        _SANDBOX_REGISTRATION_CHALLENGES.pop(phone, None)
         raise HTTPException(
             status_code=409,
             detail="This number already has a sandbox wallet. Sign in instead.",
@@ -757,7 +742,6 @@ def momo_customer_register_verify(
         raise HTTPException(
             status_code=500, detail="Unable to complete sandbox enrollment."
         ) from error
-    _SANDBOX_REGISTRATION_CHALLENGES.pop(phone, None)
     profile = get_sandbox_customer_profile(phone)
     token = auth.create_access_token(
         user_id=0,
@@ -773,7 +757,7 @@ def momo_customer_register_verify(
             "phone_number": phone,
             "name": profile["full_name"],
             "masked_email": _mask_customer_email(profile["email"]),
-            "email_verified": True,
+            "email_verified": bool(profile["email_verified"]),
             "sandbox_only": True,
         },
         "sandbox_only": True,
@@ -1370,8 +1354,8 @@ def mtn_disbursement_transfer_status(
 
 @app.get("/api/momo/telemetry")
 def momo_get_telemetry(request: Request):
-    """Return server-observed client IP and non-unique User-Agent classification."""
-    client_ip = request.client.host if request.client else None
+    """Return coarse browser classification without exposing the observed IP."""
+    client_ip = _client_ip(request)
     user_agent = request.headers.get("User-Agent", "")
 
     os_name = "Desktop OS"
@@ -1408,7 +1392,6 @@ def momo_get_telemetry(request: Request):
     device_label = f"{os_name} · {browser}"
 
     return {
-        "client_ip": client_ip,
         "is_local": client_ip in ("127.0.0.1", "localhost", "::1"),
         "device_id": None,
         "device_label": device_label,
@@ -1448,7 +1431,7 @@ def momo_transaction_initiate(
             subscriber = _require_sandbox_customer(authorization)
             customer_ref = subscriber.get("phone_number")
             live_mtn = body.get("transaction_type") == "TRANSFER"
-        client_ip = request.client.host if request.client else "127.0.0.1"
+        client_ip = _client_ip(request)
         if live_mtn and get_mtn_disbursement_configuration_status()["environment"] != "sandbox":
             raise HTTPException(
                 status_code=403,
@@ -1506,6 +1489,14 @@ def momo_transaction_initiate(
                 location_latitude=location[0] if location else None,
                 location_longitude=location[1] if location else None,
             )
+            for private_signal in (
+                "ip_address",
+                "device_id",
+                "location",
+                "location_latitude",
+                "location_longitude",
+            ):
+                session.pop(private_signal, None)
         return session
     except HTTPException:
         raise
@@ -1555,6 +1546,7 @@ def momo_transaction_verify(
             body["session_id"],
             body["code"],
             step_up=bool(body.get("step_up", False)),
+            step_up_method=body.get("step_up_method", "EMAIL"),
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

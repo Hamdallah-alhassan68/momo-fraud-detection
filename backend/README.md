@@ -81,15 +81,15 @@ the browser. `MOMO_MODEL_DIR` is optional if the default
 ## MTN Disbursement API
 
 The sandbox customer flow supports sign-in to the bundled demo registry or
-email-verified enrollment of a new sandbox wallet. Enrollment collects a name,
-Ghana phone number, passport/Ghana Card number, email, and a demo PIN. The
-passport/ID value and PIN are stored as salted hashes; this prototype does not
-validate documents with an official identity provider. The sender is taken
-from the authenticated session; the transfer form asks for the recipient and
-amount. Wallet-to-wallet transfers require the wallet PIN and are sent to MTN
-Disbursement sandbox (`sandbox` target, EUR). Bank-to-wallet and wallet-to-bank
-flows are local simulations only and use a demo OTP; they do not call MTN or
-move money.
+direct enrollment of a new sandbox wallet. Enrollment collects a name, Ghana
+phone number, passport/Ghana Card number, email, and a demo PIN. Email is stored
+without ownership verification; the passport/ID value and PIN are stored as
+salted hashes. This prototype does not validate documents with an official
+identity provider. The sender is taken from the authenticated session; the
+transfer form asks for the recipient and amount. Wallet-to-wallet transfers
+require the wallet PIN and are sent to MTN Disbursement sandbox (`sandbox`
+target, EUR). Bank-to-wallet and wallet-to-bank flows are local simulations
+only and use a demo OTP; they do not call MTN or move money.
 
 The fraud layer learns behavioral baselines only from completed transactions.
 Device identity is a persistent browser-generated ID, IP is the address
@@ -100,14 +100,13 @@ network, and rounded location observations are stored in SQLite and compared
 with previously trusted enrollment/successful-transfer signals. IP may identify
 a reverse proxy when deployed behind one. These signals do not provide carrier
 or SIM-swap data. Signal values are not shown in the customer UI.
-HIGH-risk transactions are blocked. MEDIUM-risk live transfers require an
-email OTP sent to an ownership-verified profile address; failed/unconfigured
-SMTP delivery blocks the transfer. Demo OTP values are not returned for live
-transfers. Configure and verify the profile email before testing step-up.
-Enrollment email verification and step-up delivery require backend SMTP settings
-(`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, and optionally
-`SMTP_FROM`/`SMTP_TLS`). Email codes are never included in the developer
-outbox or event stream.
+HIGH-risk transactions are blocked. MEDIUM-risk transfers require a step-up
+using either a code sent to the stored email address or the registered passport
+number. Email delivery requires backend SMTP settings (`SMTP_HOST`, `SMTP_PORT`,
+`SMTP_USER`, `SMTP_PASSWORD`, and optionally `SMTP_FROM`/`SMTP_TLS`); when it is
+unavailable, passport verification remains available for passport holders.
+Demo OTP values are not returned for live transfers. Email codes are never
+included in the developer outbox or event stream.
 
 The frontend does not impose an arbitrary amount cap. The backend enforces the
 provider environment's configured transfer limit (EUR 10,000 for this sandbox
@@ -208,3 +207,27 @@ Further performance validation requires an appropriately authorized,
 representative, de-identified dataset with reliable outcomes. See
 [ARCHITECTURE.md](../ARCHITECTURE.md) for evaluation results, known gaps, and
 prototype limitations.
+
+## Adaptive monitoring and signal limits
+
+Adaptive Intelligence monitors scored transactions and records risk-signal
+rates, pending step-up activity, analyst outcomes, and offline model-release
+history. Customer traffic and analyst feedback do not currently retrain the
+active detector; new model versions must be produced and evaluated offline.
+The page reports training metadata as unavailable when an artifact does not
+contain a reliable training timestamp rather than inferring one.
+
+For deployments behind a reverse proxy, set `TRUSTED_PROXY_IPS` to a
+comma-separated list of the proxy IP addresses or CIDR ranges. Forwarded client
+addresses are considered only when the connecting peer is in that list.
+Without a trusted proxy configuration, the service uses the direct peer
+address. Invalid/unavailable peer addresses are omitted rather than treated as
+customer input or causing a transaction request to fail.
+
+Device identifiers and coarse location/network observations are supporting
+signals, not proof of identity. Browser identifiers can be reset or copied,
+and GPS/IP-derived locations can be inaccurate or spoofed. SIM-change signals
+in the sandbox are explicit test inputs; no carrier signal is integrated.
+Only trusted enrollment and successful-transfer observations contribute to
+trusted device/location history, while newly observed values are retained as
+untrusted sightings.

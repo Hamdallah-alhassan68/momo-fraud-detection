@@ -155,12 +155,8 @@ export default function MTNDisbursement() {
     email: "",
     pin: "",
   });
-  const [registrationCode, setRegistrationCode] = useState("");
   const [senderNumber, setSenderNumber] = useState("");
   const [recipientNumber, setRecipientNumber] = useState("");
-  const [emailAddress, setEmailAddress] = useState("");
-  const [emailVerificationCode, setEmailVerificationCode] = useState("");
-  const [emailVerificationSent, setEmailVerificationSent] = useState(false);
   const [amount, setAmount] = useState("5.00");
   const [transactionType, setTransactionType] = useState("TRANSFER");
 
@@ -180,6 +176,7 @@ export default function MTNDisbursement() {
   const [session, setSession] = useState(null);
   const [authPin, setAuthPin] = useState("");
   const [stepUpInput, setStepUpInput] = useState("");
+  const [stepUpMethod, setStepUpMethod] = useState("EMAIL");
   const [stepUpChallenge, setStepUpChallenge] = useState(null);
   const [receipt, setReceipt] = useState(null);
 
@@ -372,7 +369,6 @@ export default function MTNDisbursement() {
       setCustomerToken(data.token);
       setCustomerAccount(data.customer);
       setSenderNumber(data.customer.phone_number);
-      setEmailAddress("");
       setLoginPin("");
       setCustomerView("signin");
     } catch (loginError) {
@@ -382,7 +378,7 @@ export default function MTNDisbursement() {
     }
   }
 
-  async function handleRegistrationChallenge(event) {
+  async function handleRegistrationSubmit(event) {
     event.preventDefault();
     setLoading(true);
     setError("");
@@ -394,7 +390,7 @@ export default function MTNDisbursement() {
         );
       }
       const response = await fetch(
-        `${API_URL}/api/momo/customer/register/challenge`,
+        `${API_URL}/api/momo/customer/register`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -407,38 +403,11 @@ export default function MTNDisbursement() {
         },
       );
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Could not start enrollment.");
-      setCustomerView("verify_registration");
-    } catch (registrationError) {
-      setError(registrationError.message || "Could not start enrollment.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleRegistrationVerify(event) {
-    event.preventDefault();
-    setLoading(true);
-    setError("");
-    try {
-      const response = await fetch(
-        `${API_URL}/api/momo/customer/register/verify`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            phone_number: registration.phone_number,
-            code: registrationCode,
-          }),
-        },
-      );
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Email verification failed.");
+      if (!response.ok) throw new Error(data.detail || "Could not create sandbox wallet.");
       sessionStorage.setItem("momo-sandbox-customer-token", data.token);
       setCustomerToken(data.token);
       setCustomerAccount(data.customer);
       setSenderNumber(data.customer.phone_number);
-      setRegistrationCode("");
       setRegistration({
         phone_number: "",
         full_name: "",
@@ -448,8 +417,8 @@ export default function MTNDisbursement() {
         pin: "",
       });
       setCustomerView("signin");
-    } catch (verificationError) {
-      setError(verificationError.message || "Email verification failed.");
+    } catch (registrationError) {
+      setError(registrationError.message || "Could not create sandbox wallet.");
     } finally {
       setLoading(false);
     }
@@ -463,61 +432,6 @@ export default function MTNDisbursement() {
     setSession(null);
     setStep("form");
     setError("");
-  }
-
-  async function requestEmailVerification() {
-    setError("");
-    try {
-      const response = await fetch(`${API_URL}/api/momo/customer/email/challenge`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${customerToken}`,
-        },
-        body: JSON.stringify({ email: emailAddress }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Could not send verification email.");
-      if (data.email_verified) {
-        setCustomerAccount((current) => ({
-          ...current,
-          email_verified: true,
-          masked_email: data.masked_email,
-        }));
-      } else {
-        setEmailVerificationSent(true);
-      }
-    } catch (verificationError) {
-      setError(verificationError.message || "Could not send verification email.");
-    }
-  }
-
-  async function verifyEmailAddress() {
-    setError("");
-    try {
-      const response = await fetch(`${API_URL}/api/momo/customer/email/verify`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${customerToken}`,
-        },
-        body: JSON.stringify({
-          email: emailAddress,
-          code: emailVerificationCode,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Email verification failed.");
-      setCustomerAccount((current) => ({
-        ...current,
-        email_verified: true,
-        masked_email: data.masked_email,
-      }));
-      setEmailVerificationSent(false);
-      setEmailVerificationCode("");
-    } catch (verificationError) {
-      setError(verificationError.message || "Email verification failed.");
-    }
   }
 
   // Step 1: Proceed to PIN Authorization
@@ -615,6 +529,7 @@ export default function MTNDisbursement() {
       if (data.status === "STEP_UP_REQUIRED") {
         setStepUpChallenge(data);
         setStepUpInput("");
+        setStepUpMethod(data.email_available ? "EMAIL" : "PASSPORT");
         setStep("stepup");
       } else {
         setReceipt(data);
@@ -663,6 +578,7 @@ export default function MTNDisbursement() {
           session_id: session.session_id,
           code: stepUpInput.trim(),
           step_up: true,
+          step_up_method: stepUpMethod,
         }),
       });
 
@@ -1040,24 +956,22 @@ export default function MTNDisbursement() {
             {/* STEP 1: TRANSACTION DETAILS FORM */}
             {step === "form" && !customerAccount && (
               <div className="transaction-form">
-                {customerView !== "verify_registration" && (
-                  <div className="challenge-mode-tabs">
-                    <button
-                      type="button"
-                      className={`mode-tab ${customerView === "signin" ? "active" : ""}`}
-                      onClick={() => setCustomerView("signin")}
-                    >
-                      Sign in
-                    </button>
-                    <button
-                      type="button"
-                      className={`mode-tab ${customerView === "register" ? "active" : ""}`}
-                      onClick={() => setCustomerView("register")}
-                    >
-                      Create sandbox wallet
-                    </button>
-                  </div>
-                )}
+                <div className="challenge-mode-tabs">
+                  <button
+                    type="button"
+                    className={`mode-tab ${customerView === "signin" ? "active" : ""}`}
+                    onClick={() => setCustomerView("signin")}
+                  >
+                    Sign in
+                  </button>
+                  <button
+                    type="button"
+                    className={`mode-tab ${customerView === "register" ? "active" : ""}`}
+                    onClick={() => setCustomerView("register")}
+                  >
+                    Create sandbox wallet
+                  </button>
+                </div>
 
                 <div className="privacy-signal-note">
                   Location is required for account enrollment and transfers.
@@ -1114,7 +1028,7 @@ export default function MTNDisbursement() {
 
                 {customerView === "register" && (
                   <form
-                    onSubmit={handleRegistrationChallenge}
+                    onSubmit={handleRegistrationSubmit}
                     className="transaction-form"
                   >
                     <div className="field-block">
@@ -1190,7 +1104,7 @@ export default function MTNDisbursement() {
                     </div>
                     <div className="field-block">
                       <label htmlFor="register-email" className="field-label">
-                        Email for sign-in security and step-up codes
+                        Email address (stored for optional risk checks)
                       </label>
                       <input
                         id="register-email"
@@ -1232,46 +1146,7 @@ export default function MTNDisbursement() {
                       your browser to share an approximate location.
                     </p>
                     <button type="submit" className="primary-action-btn" disabled={loading}>
-                      {loading ? "Requesting verification…" : "Email me a verification code"}
-                    </button>
-                  </form>
-                )}
-
-                {customerView === "verify_registration" && (
-                  <form
-                    onSubmit={handleRegistrationVerify}
-                    className="transaction-form"
-                  >
-                    <p className="field-hint">
-                      Enter the six-digit code sent to {registration.email}.
-                    </p>
-                    <label htmlFor="register-code" className="field-label">
-                      Email verification code
-                    </label>
-                    <input
-                      id="register-code"
-                      type="text"
-                      inputMode="numeric"
-                      autoComplete="one-time-code"
-                      maxLength={6}
-                      required
-                      value={registrationCode}
-                      onChange={(event) =>
-                        setRegistrationCode(
-                          event.target.value.replace(/\D/g, "").slice(0, 6),
-                        )
-                      }
-                      className="large-code-input"
-                    />
-                    <button type="submit" className="primary-action-btn" disabled={loading}>
-                      {loading ? "Verifying…" : "Verify email and create wallet"}
-                    </button>
-                    <button
-                      type="button"
-                      className="text-button"
-                      onClick={() => setCustomerView("register")}
-                    >
-                      Back to account details
+                      {loading ? "Creating wallet…" : "Create sandbox wallet"}
                     </button>
                   </form>
                 )}
@@ -1314,63 +1189,6 @@ export default function MTNDisbursement() {
                 <div className="field-block account-session-card">
                   <span className="field-label">Signed-in sandbox wallet</span>
                   <strong>{customerAccount.name} · {senderNumber}</strong>
-                  <span className="field-hint">
-                    Step-up email: {customerAccount.masked_email || "not verified"}
-                    {customerAccount.email_verified ? " (verified)" : " (not verified)"}
-                  </span>
-                  {!customerAccount.email_verified && (
-                    <div className="email-verification-fields">
-                      <label htmlFor="customer-email" className="field-label">
-                        Email for security verification
-                      </label>
-                      <input
-                        id="customer-email"
-                        type="email"
-                        autoComplete="email"
-                        value={emailAddress}
-                        onChange={(event) => setEmailAddress(event.target.value)}
-                        placeholder="you@example.com"
-                        className="standard-input"
-                      />
-                      {!emailVerificationSent ? (
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={requestEmailVerification}
-                          disabled={!emailAddress.includes("@")}
-                        >
-                          Send verification code
-                        </button>
-                      ) : (
-                        <>
-                          <label htmlFor="customer-email-code" className="field-label">
-                            Six-digit email code
-                          </label>
-                          <input
-                            id="customer-email-code"
-                            type="text"
-                            inputMode="numeric"
-                            maxLength={6}
-                            value={emailVerificationCode}
-                            onChange={(event) =>
-                              setEmailVerificationCode(
-                                event.target.value.replace(/\D/g, "").slice(0, 6),
-                              )
-                            }
-                            className="standard-input"
-                          />
-                          <button
-                            type="button"
-                            className="text-button"
-                            onClick={verifyEmailAddress}
-                            disabled={emailVerificationCode.length !== 6}
-                          >
-                            Verify email address
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  )}
                   <button type="button" className="text-button" onClick={signOutCustomer}>
                     Sign out
                   </button>
@@ -1605,20 +1423,60 @@ export default function MTNDisbursement() {
 
                 <form onSubmit={handleVerifyStepUp} className="stepup-form-body">
                   <div className="field-block">
-                    <label htmlFor="stepup-otp" className="field-label">
-                      Enter the 6-digit code sent to your verified email
+                    <div className="challenge-mode-tabs">
+                      {stepUpChallenge.email_available && (
+                        <button
+                          type="button"
+                          className={`mode-tab ${stepUpMethod === "EMAIL" ? "active" : ""}`}
+                          aria-pressed={stepUpMethod === "EMAIL"}
+                          onClick={() => {
+                            setStepUpMethod("EMAIL");
+                            setStepUpInput("");
+                          }}
+                        >
+                          Email code
+                        </button>
+                      )}
+                      {stepUpChallenge.passport_available && (
+                        <button
+                          type="button"
+                          className={`mode-tab ${stepUpMethod === "PASSPORT" ? "active" : ""}`}
+                          aria-pressed={stepUpMethod === "PASSPORT"}
+                          onClick={() => {
+                            setStepUpMethod("PASSPORT");
+                            setStepUpInput("");
+                          }}
+                        >
+                          Passport number
+                        </button>
+                      )}
+                    </div>
+                    <label htmlFor="stepup-credential" className="field-label">
+                      {stepUpMethod === "EMAIL"
+                        ? `Enter the code sent to ${stepUpChallenge.verification_destination || "your email"}`
+                        : "Enter the passport number registered to this wallet"}
                     </label>
                     <input
-                      id="stepup-otp"
+                      id="stepup-credential"
                       type="text"
-                      maxLength={6}
+                      inputMode={stepUpMethod === "EMAIL" ? "numeric" : "text"}
+                      autoComplete={stepUpMethod === "EMAIL" ? "one-time-code" : "off"}
+                      maxLength={stepUpMethod === "EMAIL" ? 6 : 64}
                       autoFocus
                       value={stepUpInput}
-                      onChange={(e) => setStepUpInput(e.target.value.replace(/\D/g, ""))}
-                      placeholder="000000"
+                      onChange={(e) =>
+                        setStepUpInput(
+                          stepUpMethod === "EMAIL"
+                            ? e.target.value.replace(/\D/g, "").slice(0, 6)
+                            : e.target.value,
+                        )
+                      }
+                      placeholder={stepUpMethod === "EMAIL" ? "000000" : "Passport number"}
                       className="large-code-input"
                     />
-                    {stepUpChallenge.demo_hint && !stepUpChallenge.live_mtn && (
+                    {stepUpMethod === "EMAIL" &&
+                      stepUpChallenge.demo_hint &&
+                      !stepUpChallenge.live_mtn && (
                       <button
                         type="button"
                         className="quick-fill-link"
@@ -1626,7 +1484,7 @@ export default function MTNDisbursement() {
                       >
                         Fill Code: {stepUpChallenge.demo_hint}
                       </button>
-                    )}
+                      )}
                   </div>
 
                   <div className="form-button-row">

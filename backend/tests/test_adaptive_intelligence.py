@@ -658,6 +658,113 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
         self.assertEqual(profile["recipient_counts"], {"WALLET-2001": 2})
         self.assertEqual(profile["avg_transactions_per_day"], 1)
 
+    def test_customer_amount_baseline_uses_median_and_mad_for_outlier_robustness(self):
+        for index, amount in enumerate((10, 10, 10, 10, 10000)):
+            self._insert(
+                f"ROBUST-{index}",
+                "WALLET-2001",
+                f"2026-04-{index + 1:02d}T12:00:00+00:00",
+                amount,
+            )
+
+        profile = database.get_customer_baseline("WALLET-1001")
+
+        self.assertEqual(profile["median_amount"], 10)
+        self.assertEqual(profile["median_absolute_deviation"], 0)
+
+    def test_velocity_summaries_cover_customer_and_recipient_windows(self):
+        for index, (amount, recipient) in enumerate(
+            ((10, "WALLET-2001"), (20, "WALLET-2001"), (30, "WALLET-2002"))
+        ):
+            database.create_momo_session(
+                f"VELOCITY-{index}",
+                "WALLET-1001",
+                "TRANSFER",
+                amount,
+                recipient,
+                "PIN",
+                None,
+                f"device-{index}",
+                "192.0.2.10",
+            )
+
+        velocity = database.get_customer_velocity_summary("WALLET-1001")
+        recipient_velocity = database.get_recipient_velocity_summary(
+            "WALLET-1001", "WALLET-2001"
+        )
+
+        self.assertEqual(velocity["5m_count"], 3)
+        self.assertEqual(velocity["5m_amount"], 60)
+        self.assertEqual(velocity["1h_count"], 3)
+        self.assertEqual(velocity["1h_amount"], 60)
+        self.assertEqual(recipient_velocity, {"count": 2, "amount": 30})
+
+    def test_untrusted_device_is_seen_but_not_part_of_trusted_baseline(self):
+        database.record_customer_security_signal(
+            customer_ref="WALLET-1001",
+            event_type="LOGIN",
+            device_id="new-device",
+            ip_address="203.0.113.8",
+            trusted=False,
+        )
+
+        history = database.get_customer_security_history("WALLET-1001")
+
+        self.assertNotIn("new-device", history["device_ids"])
+        self.assertIn("new-device", history["seen_device_ids"])
+        self.assertNotIn("203.0.113.8", history["ip_addresses"])
+        self.assertIn("new-device", history["device_first_seen"])
+
+    def test_recent_trusted_locations_detect_implausible_travel(self):
+        from datetime import datetime, timedelta, timezone
+        from services.momo_simulator import _has_impossible_travel
+
+        result = _has_impossible_travel(
+            (6.69, -1.62),
+            [{
+                "latitude": 5.60,
+                "longitude": -0.18,
+                "observed_at": (
+                    datetime.now(timezone.utc) - timedelta(minutes=10)
+                ).isoformat(),
+            }],
+            datetime.now(timezone.utc),
+        )
+
+        self.assertTrue(result)
+
+    def test_pending_step_up_is_included_in_admin_activity(self):
+        database.create_momo_session(
+            "STEPUP-FEED",
+            "WALLET-1001",
+            "TRANSFER",
+            25,
+            "WALLET-2001",
+            "PIN",
+            None,
+            "device-1",
+            "192.0.2.10",
+        )
+        database.update_momo_session_status(
+            "STEPUP-FEED",
+            "STEP_UP",
+            risk_level="MEDIUM",
+            risk_score=0.42,
+            risk_signals='{"device_change": true}',
+            assessment_reasons='["New or changed device"]',
+        )
+
+        feed = database.get_recent_transactions_feed(limit=12)
+        analytics = database.get_analytics_data()
+        pending = next(
+            row for row in feed
+            if row["transaction_reference"] == "STEPUP-FEED"
+        )
+
+        self.assertEqual(pending["status"], "STEP_UP_REQUIRED")
+        self.assertEqual(pending["risk_signals"], {"device_change": True})
+        self.assertEqual(pending["reasons"], ["New or changed device"])
+        self.assertEqual(analytics["totals"]["step_up_pending"], 1)
     def test_baseline_normalizes_timestamps_to_ghana_time(self):
         self._insert(
             "PROFILE-OFFSET-1",
@@ -858,6 +965,72 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
             )
 
 
+class TrustedProxyAddressTests(unittest.TestCase):
+    def test_non_ip_peer_is_treated_as_unavailable(self):
+        from starlette.requests import Request
+        from app import _client_ip
+
+        request = Request({
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/",
+            "raw_path": b"/",
+            "query_string": b"",
+            "headers": [],
+            "client": ("testclient", 1234),
+            "server": ("localhost", 80),
+        })
+
+        self.assertIsNone(_client_ip(request))
+
+    def test_forwarded_for_is_ignored_when_peer_is_not_a_trusted_proxy(self):
+        from starlette.requests import Request
+        from app import _client_ip
+
+        request = Request({
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/",
+            "raw_path": b"/",
+            "query_string": b"",
+            "headers": [(b"x-forwarded-for", b"198.51.100.4")],
+            "client": ("10.0.0.2", 1234),
+            "server": ("localhost", 80),
+        })
+
+        with patch.dict("os.environ", {"TRUSTED_PROXY_IPS": ""}):
+            self.assertEqual(_client_ip(request), "10.0.0.2")
+
+    def test_trusted_proxy_chain_selects_last_untrusted_hop(self):
+        from starlette.requests import Request
+        from app import _client_ip
+
+        request = Request({
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/",
+            "raw_path": b"/",
+            "query_string": b"",
+            "headers": [
+                (b"x-forwarded-for", b"198.51.100.4, 10.1.1.1"),
+            ],
+            "client": ("10.0.0.2", 1234),
+            "server": ("localhost", 80),
+        })
+
+        with patch.dict("os.environ", {"TRUSTED_PROXY_IPS": "10.0.0.0/8"}):
+            self.assertEqual(_client_ip(request), "198.51.100.4")
+
+
 class MediumRiskEmailStepUpTests(unittest.TestCase):
     def setUp(self):
         self.original_database_path = database.DATABASE_PATH
@@ -898,7 +1071,8 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         )
 
         self.assertEqual(challenge["status"], "STEP_UP_REQUIRED")
-        self.assertEqual(challenge["verification_method"], "EMAIL")
+        self.assertEqual(challenge["verification_method"], "EMAIL_OR_PASSPORT")
+        self.assertTrue(challenge["email_available"])
         self.assertEqual(
             challenge["verification_destination"], "k***h@example.test"
         )
@@ -912,7 +1086,7 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         self.assertEqual(result["status"], "APPROVED")
         self.assertTrue(result["step_up_completed"])
 
-    def test_medium_risk_fails_closed_without_verified_email(self):
+    def test_medium_risk_email_step_up_does_not_require_registration_verification(self):
         self.simulator.CUSTOMERS[0]["email_verified"] = False
         session = self.simulator.initiate_transaction(
             customer_ref="WALLET-1001",
@@ -926,10 +1100,9 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
             session["session_id"], "2233"
         )
 
-        self.assertEqual(result["status"], "BLOCKED")
-        self.assertFalse(result["approved"])
-        self.assertIn("no verified email", result["message"])
-        self.assertNotIn("demo_hint", result)
+        self.assertEqual(result["status"], "STEP_UP_REQUIRED")
+        self.assertTrue(result["email_available"])
+        self.assertIn("demo_hint", result)
 
     def test_live_step_up_fails_closed_when_email_is_not_delivered(self):
         assessment = {
@@ -1344,7 +1517,7 @@ class FastApiModelRetrainEndpointTests(unittest.TestCase):
                 self.assertEqual(trigger["volume_threshold"], 50)
                 self.assertIn(
                     trigger["recommended_action"],
-                    ("RECORD_DRIFT_BASELINE", "MONITOR_STABLE"),
+                    ("REVIEW_DRIFT", "MONITOR_STABLE"),
                 )
 
         try:
@@ -2022,7 +2195,7 @@ class CustomInputsAndRetrainingTests(unittest.TestCase):
                 self.assertEqual(
                     trigger["recommended_action"],
                     (
-                        "RECORD_DRIFT_BASELINE"
+                        "REVIEW_DRIFT"
                         if expected
                         else "MONITOR_STABLE"
                     ),
@@ -2044,7 +2217,7 @@ class CustomInputsAndRetrainingTests(unittest.TestCase):
         self.assertTrue(trigger["action_required"])
         self.assertEqual(
             trigger["recommended_action"],
-            "RECORD_DRIFT_BASELINE",
+            "REVIEW_DRIFT",
         )
 
     def test_custom_wallet_auto_provisioning_in_momo_simulator(self):
@@ -2082,10 +2255,10 @@ class CustomInputsAndRetrainingTests(unittest.TestCase):
         self.assertIsInstance(trigger["volume_breach"], bool)
         self.assertIsInstance(trigger["new_transactions_since_baseline"], int)
         self.assertIsInstance(trigger["reasons"], list)
-        self.assertTrue(trigger["auto_executable"])
+        self.assertFalse(trigger["auto_executable"])
         self.assertIn(
             trigger["recommended_action"],
-            ("RECORD_DRIFT_BASELINE", "MONITOR_STABLE"),
+            ("REVIEW_DRIFT", "MONITOR_STABLE"),
         )
 
 

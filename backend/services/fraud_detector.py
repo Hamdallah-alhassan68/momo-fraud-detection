@@ -344,6 +344,27 @@ class FraudDetector:
                 "Transaction location differs from the customer's usual location"
             )
 
+        if bool(transaction.get("impossible_travel", False)):
+            score += 0.20
+            reasons.append(
+                "Recent location history implies an implausible travel speed"
+            )
+
+        if bool(transaction.get("new_account", False)):
+            score += 0.05
+            reasons.append("New account with limited transaction history")
+
+        if bool(transaction.get("cold_start", False)):
+            reasons.append(
+                "Limited behavioral history; anomaly comparison has low confidence"
+            )
+
+        if bool(transaction.get("recipient_burst", False)):
+            score += 0.10
+            reasons.append(
+                "Repeated transfer attempts to the same recipient in a short window"
+            )
+
         # --------------------------------------------------
         # Recent SIM swap
         # --------------------------------------------------

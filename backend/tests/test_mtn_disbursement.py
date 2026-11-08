@@ -852,30 +852,36 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
         import app as app_module
         import tempfile
         from pathlib import Path
+        from services import momo_simulator
 
         self.app_module = app_module
+        self.momo_simulator = momo_simulator
         self.original_database_path = database.DATABASE_PATH
         self.temp_dir = tempfile.TemporaryDirectory()
         database.DATABASE_PATH = Path(self.temp_dir.name) / "sandbox-enrollment.sqlite3"
         database.initialize_database()
         self.client = TestClient(app)
         self.phone = "0261234567"
-        self.app_module._SANDBOX_REGISTRATION_CHALLENGES.clear()
 
     def tearDown(self):
         self.client.close()
-        self.app_module._SANDBOX_REGISTRATION_CHALLENGES.clear()
+        self.momo_simulator.CUSTOMERS[:] = [
+            customer
+            for customer in self.momo_simulator.CUSTOMERS
+            if customer["ref"] != self.phone
+        ]
+        self.momo_simulator.BALANCES.pop(self.phone, None)
         database.DATABASE_PATH = self.original_database_path
         self.temp_dir.cleanup()
 
-    def test_registration_verifies_email_hashes_secrets_and_creates_signin(self):
+    def test_registration_stores_email_without_verification_and_creates_signin(self):
         with patch.dict(
             os.environ, {"MTN_DISBURSEMENT_ENVIRONMENT": "sandbox"}, clear=False
         ), patch(
             "app.send_email_verification_email", return_value=True
         ) as send_email:
-            challenge = self.client.post(
-                "/api/momo/customer/register/challenge",
+            created = self.client.post(
+                "/api/momo/customer/register",
                 json={
                     "phone_number": self.phone,
                     "full_name": "Sandbox Test Customer",
@@ -888,24 +894,18 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
                     "location_longitude": -0.18,
                 },
             )
-            self.assertEqual(challenge.status_code, 200, challenge.text)
-            self.assertNotIn("code", challenge.json())
-            verification = self.client.post(
-                "/api/momo/customer/register/verify",
-                json={
-                    "phone_number": self.phone,
-                    "code": send_email.call_args.args[1],
-                },
-            )
-            self.assertEqual(verification.status_code, 200, verification.text)
+            self.assertEqual(created.status_code, 200, created.text)
 
         profile = database.get_sandbox_customer_profile(self.phone)
         self.assertEqual(profile["full_name"], "Sandbox Test Customer")
-        self.assertTrue(profile["email_verified"])
+        self.assertEqual(profile["email"], "customer@example.test")
+        self.assertFalse(profile["email_verified"])
         self.assertNotEqual(profile["pin_hash"], "4826")
         self.assertTrue(auth.verify_password("4826", profile["pin_hash"]))
         self.assertTrue(auth.verify_password("PTEST84521", profile["id_hash"]))
-        self.assertEqual(verification.json()["customer"]["name"], "Sandbox Test Customer")
+        self.assertEqual(created.json()["customer"]["name"], "Sandbox Test Customer")
+        self.assertFalse(created.json()["customer"]["email_verified"])
+        send_email.assert_not_called()
 
         login = self.client.post(
             "/api/momo/customer/login",
@@ -989,9 +989,62 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
         self.assertEqual(signal["location_longitude"], -0.19)
         self.assertFalse(signal["trusted"])
 
+    def test_registered_wallet_pin_authorizes_transaction_using_saved_email(self):
+        with patch.dict(
+            os.environ, {"MTN_DISBURSEMENT_ENVIRONMENT": "sandbox"}, clear=False
+        ), patch(
+            "services.momo_simulator._resolve_outcome",
+            return_value={"status": "AUTHORIZED"},
+        ) as resolve_outcome:
+            created = self.client.post(
+                "/api/momo/customer/register",
+                json={
+                    "phone_number": self.phone,
+                    "full_name": "Sandbox Test Customer",
+                    "id_type": "PASSPORT",
+                    "id_number": "P-TEST-84521",
+                    "email": "customer@example.test",
+                    "pin": "4826",
+                    "device_id": "browser-device-1",
+                    "location_latitude": 5.60,
+                    "location_longitude": -0.18,
+                },
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            headers = {"Authorization": f"Bearer {created.json()['token']}"}
+            started = self.client.post(
+                "/api/momo/transaction/initiate",
+                headers=headers,
+                json={
+                    "transaction_type": "TRANSFER",
+                    "amount": 1,
+                    "recipient": "0242002002",
+                    "device_id": "browser-device-1",
+                    "location_latitude": 5.60,
+                    "location_longitude": -0.18,
+                    "live_mtn": True,
+                },
+            )
+            self.assertEqual(started.status_code, 200, started.text)
+            verified = self.client.post(
+                "/api/momo/transaction/verify",
+                headers=headers,
+                json={
+                    "session_id": started.json()["session_id"],
+                    "code": "4826",
+                },
+            )
 
-class EmailOnlyStepUpTests(unittest.TestCase):
-    def test_registered_id_is_not_accepted_as_step_up_authentication(self):
+        self.assertEqual(verified.status_code, 200, verified.text)
+        self.assertEqual(verified.json()["status"], "AUTHORIZED")
+        self.assertEqual(
+            resolve_outcome.call_args.kwargs["step_up_email"],
+            "customer@example.test",
+        )
+
+
+class StepUpCredentialTests(unittest.TestCase):
+    def test_passport_or_email_code_can_authenticate_step_up(self):
         from services import momo_simulator
 
         session = {
@@ -1000,23 +1053,22 @@ class EmailOnlyStepUpTests(unittest.TestCase):
             "live_mtn": False,
             "otp_code": "123456",
         }
-        customer = {
-            "ref": "0241001001",
-            "id_number": "GHA-712345678-1",
+        passport_customer = {
+            "id_type": "PASSPORT",
+            "id_hash": auth.hash_password("PTEST84521"),
         }
-        with patch(
-            "services.momo_simulator.get_momo_session",
-            return_value=session,
-        ), patch(
-            "services.momo_simulator._ensure_customer",
-            return_value=customer,
-        ), patch(
-            "services.momo_simulator.get_account_status",
-            return_value={"frozen": False},
-        ):
-            with self.assertRaisesRegex(ValueError, "email verification code"):
-                momo_simulator.verify_transaction(
-                    "session-id",
-                    "GHA-712345678-1",
-                    step_up=True,
-                )
+        momo_simulator._verify_step_up_credential(
+            passport_customer, session, "P-TEST-84521", "PASSPORT"
+        )
+        momo_simulator._verify_step_up_credential(
+            passport_customer, session, "123456", "EMAIL"
+        )
+
+        with self.assertRaisesRegex(ValueError, "Incorrect passport number"):
+            momo_simulator._verify_step_up_credential(
+                passport_customer, session, "wrong", "PASSPORT"
+            )
+        with self.assertRaisesRegex(ValueError, "not available"):
+            momo_simulator._verify_step_up_credential(
+                {"id_type": "GHANA_CARD"}, session, "GHA-12345", "PASSPORT"
+            )

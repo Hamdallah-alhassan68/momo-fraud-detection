@@ -22,6 +22,7 @@ from database.database import (
     get_daily_transaction_stats,
     get_recent_transaction_samples,
     get_analyst_decision_counts,
+    get_resolved_analyst_label_counts,
     get_resolved_analyst_outcome_trend,
     get_model_drift_baseline,
     model_drift_logged_today,
@@ -29,10 +30,13 @@ from database.database import (
     record_model_monitoring_snapshot,
     create_audit_log,
     get_latest_model_version,
+    get_model_version_history,
     get_recent_transactions_feed,
+    get_pending_step_up_count,
 )
 from services import events
 from services.fraud_detector import fraud_detector
+from services.feature_engineering import ISO_FEATURES
 
 DRIFT_WARN = 0.10
 DRIFT_CRIT = 0.25
@@ -164,9 +168,18 @@ def compute_flag_rates():
                 COUNT(*) AS total,
                 COALESCE(SUM(device_change), 0) AS device_change,
                 COALESCE(SUM(ip_network_mismatch), 0) AS ip_mismatch,
+                COALESCE(SUM(location_mismatch), 0) AS location_mismatch,
+                COALESCE(SUM(impossible_travel), 0) AS impossible_travel,
+                COALESCE(SUM(recipient_new), 0) AS recipient_novel,
                 COALESCE(SUM(recent_sim_swap), 0) AS sim_swap,
                 COALESCE(SUM(velocity_spike), 0) AS velocity,
-                COALESCE(SUM(frequency_spike), 0) AS frequency
+                COALESCE(SUM(velocity_5m_amount), 0) AS velocity_5m_amount,
+                COALESCE(SUM(velocity_1h_amount), 0) AS velocity_1h_amount,
+                COALESCE(SUM(frequency_spike), 0) AS frequency,
+                COALESCE(SUM(amount_deviation), 0) AS amount_deviation,
+                COALESCE(SUM(unusual_hour), 0) AS unusual_hour,
+                COALESCE(SUM(new_account), 0) AS new_account,
+                COALESCE(SUM(cold_start), 0) AS cold_start
             FROM transactions
             """
         ).fetchone()
@@ -175,8 +188,17 @@ def compute_flag_rates():
         return {
             "device_change_rate": round(int(row["device_change"]) / total, 4),
             "ip_mismatch_rate": round(int(row["ip_mismatch"]) / total, 4),
+            "location_mismatch_rate": round(int(row["location_mismatch"]) / total, 4),
+            "impossible_travel_rate": round(int(row["impossible_travel"]) / total, 4),
+            "recipient_novel_rate": round(int(row["recipient_novel"]) / total, 4),
             "sim_swap_rate": round(int(row["sim_swap"]) / total, 4),
             "velocity_rate": round(int(row["velocity"]) / total, 4),
+            "amount_deviation_rate": round(int(row["amount_deviation"]) / total, 4),
+            "unusual_hour_rate": round(int(row["unusual_hour"]) / total, 4),
+            "new_account_rate": round(int(row["new_account"]) / total, 4),
+            "cold_start_rate": round(int(row["cold_start"]) / total, 4),
+            "velocity_5m_amount": round(float(row["velocity_5m_amount"]), 2),
+            "velocity_1h_amount": round(float(row["velocity_1h_amount"]), 2),
             "frequency_spike_rate": round(int(row["frequency"]) / total, 4),
             "tracked": int(row["total"]),
         }
@@ -400,12 +422,47 @@ def build_monitoring():
     latest_model = get_latest_model_version()
     active_model_version = latest_model["version"] if latest_model else "V3.0-HYBRID"
     recent_transactions = get_recent_transactions_feed(limit=5)
+    training_feedback = get_resolved_analyst_label_counts()
+    runtime_evaluation = _get_runtime_model_evaluation()
+    training_manifest = (
+        fraud_detector.config.get("evaluation")
+        if isinstance(fraud_detector.config.get("evaluation"), dict)
+        else {}
+    )
+    split_counts = training_manifest.get("split_counts", {})
+    training_split = split_counts.get("train", {})
+    validation_split = split_counts.get("validation", {})
+    test_split = split_counts.get("test", {})
+    model_training = {
+        "mode": "offline_reviewed_release",
+        "active_model_version": active_model_version,
+        "dataset": training_manifest.get("dataset"),
+        "dataset_sha256": training_manifest.get("dataset_sha256"),
+        "training_seed": training_manifest.get("seed"),
+        "scikit_learn_version": training_manifest.get("scikit_learn_version"),
+        "trained_at": training_manifest.get("training_run_at_utc"),
+        "training_rows": training_split.get("rows"),
+        "training_fraud_labels": training_split.get("fraud_labels"),
+        "validation_rows": validation_split.get("rows"),
+        "validation_fraud_labels": validation_split.get("fraud_labels"),
+        "test_rows": test_split.get("rows"),
+        "test_fraud_labels": test_split.get("fraud_labels"),
+        "features": ISO_FEATURES,
+        "feedback_labels": {
+            "fraud_confirmed": training_feedback.get("FRAUD_CONFIRMED", 0),
+            "legitimate": training_feedback.get("LEGITIMATE", 0),
+        },
+        "live_transactions_used_for_training": False,
+        "analyst_feedback_used_for_training": False,
+        "runtime_evaluation": runtime_evaluation,
+        "version_history": get_model_version_history(limit=10),
+    }
     flag_rates_data = compute_flag_rates()
     tracked = flag_rates_data.get("tracked", 0)
     today_count = next((item["total"] for item in anomaly_series if item["day"] == today), 0)
 
     # ------------------------------------------------
-    # Automated baseline-capture trigger evaluation.
+    # Drift review recommendation; this does not train or update the model.
     # ------------------------------------------------
     if stored_baseline:
         reference_count = int(stored_baseline["transaction_count"])
@@ -464,9 +521,9 @@ def build_monitoring():
         "new_transactions_since_baseline": new_tx_since_baseline,
         "new_transactions_since_retrain": new_tx_since_baseline,
         "reasons": automated_trigger_reasons,
-        "auto_executable": True,
+        "auto_executable": False,
         "recommended_action": (
-            "RECORD_DRIFT_BASELINE"
+            "REVIEW_DRIFT"
             if automated_trigger_required
             else "MONITOR_STABLE"
         ),
@@ -476,6 +533,7 @@ def build_monitoring():
         "active_model_version": active_model_version,
         "recent_transactions": recent_transactions,
         "tracked": tracked,
+        "step_up_pending": get_pending_step_up_count(),
         "today_transactions_count": today_count,
         "anomaly_series": anomaly_series,
         "risk_series": risk_series,
@@ -490,7 +548,8 @@ def build_monitoring():
             "trend": resolved_outcome_series,
             "window_days": 14,
         },
-        "runtime_model_evaluation": _get_runtime_model_evaluation(),
+        "runtime_model_evaluation": runtime_evaluation,
+        "model_training": model_training,
         "decided": decided,
         "confirmed": confirmed,
         "legitimate": legitimate,

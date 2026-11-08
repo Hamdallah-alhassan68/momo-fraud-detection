@@ -11,6 +11,7 @@ The balances and credentials here are DEMO simulation data only.
 """
 
 import ipaddress
+import json
 import re
 import secrets
 import uuid
@@ -27,9 +28,10 @@ from database.database import (
     create_fraud_case,
     create_audit_log,
     get_customer_recipient_history,
-    count_velocity_sessions,
     get_customer_baseline,
     get_customer_security_history,
+    get_customer_velocity_summary,
+    get_recipient_velocity_summary,
     get_sandbox_customer_profile,
     trust_customer_security_signal,
     get_account_status,
@@ -252,6 +254,7 @@ def _ensure_customer(customer_ref):
             "phone": sandbox_profile["phone_number"],
             "id_type": sandbox_profile["id_type"],
             "id_number": "",
+            "id_hash": sandbox_profile.get("id_hash"),
             "email": sandbox_profile["email"],
             "email_verified": bool(sandbox_profile["email_verified"]),
             "balance": float(sandbox_profile["balance"]),
@@ -570,7 +573,73 @@ def _normalize_location(latitude, longitude):
     return round(latitude, 2), round(longitude, 2)
 
 
-def verify_transaction(session_id, code, step_up=False):
+def _distance_km(first, second):
+    """Approximate great-circle distance between two coarse GPS points."""
+    from math import asin, cos, radians, sin, sqrt
+
+    lat1, lon1 = radians(first[0]), radians(first[1])
+    lat2, lon2 = radians(second[0]), radians(second[1])
+    delta_lat = lat2 - lat1
+    delta_lon = lon2 - lon1
+    haversine = (
+        sin(delta_lat / 2) ** 2
+        + cos(lat1) * cos(lat2) * sin(delta_lon / 2) ** 2
+    )
+    return 6371.0 * 2 * asin(sqrt(min(1.0, haversine)))
+
+
+def _has_impossible_travel(location, trusted_locations, now):
+    if not location:
+        return False
+    for previous in trusted_locations:
+        if not previous.get("observed_at"):
+            continue
+        try:
+            observed = datetime.fromisoformat(
+                previous["observed_at"].replace("Z", "+00:00")
+            )
+            if observed.tzinfo is None:
+                observed = observed.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        elapsed_hours = (now - observed).total_seconds() / 3600
+        distance = _distance_km(
+            (previous["latitude"], previous["longitude"]),
+            location,
+        )
+        if elapsed_hours > 0 and distance >= 100 and distance / elapsed_hours > 900:
+            return True
+    return False
+
+
+def _verify_step_up_credential(customer, session, credential, method):
+    verification_method = str(method or "EMAIL").strip().upper()
+    if verification_method == "PASSPORT":
+        if str(customer.get("id_type") or "").upper() != "PASSPORT":
+            raise ValueError("Passport verification is not available for this wallet.")
+        passport_number = re.sub(r"[\s-]", "", str(credential or "")).upper()
+        id_hash = customer.get("id_hash")
+        stored_passport = re.sub(
+            r"[\s-]", "", str(customer.get("id_number") or "")
+        ).upper()
+        passport_matches = (
+            verify_password(passport_number, id_hash)
+            if id_hash
+            else bool(stored_passport) and passport_number == stored_passport
+        )
+        if not passport_matches:
+            raise ValueError("Incorrect passport number. Please try again.")
+        return
+    if verification_method == "EMAIL":
+        expected_otp = str(session.get("otp_code") or "").strip()
+        clean_code = str(credential).replace("-", "").strip().upper()
+        if not expected_otp or clean_code != expected_otp:
+            raise ValueError("Incorrect email verification code. Please try again.")
+        return
+    raise ValueError("Choose email code or passport verification.")
+
+
+def verify_transaction(session_id, code, step_up=False, step_up_method="EMAIL"):
     """Verify the PIN/OTP then run the fraud layer in real time."""
 
     session = get_momo_session(session_id)
@@ -594,29 +663,26 @@ def verify_transaction(session_id, code, step_up=False):
         )
 
     if step_up:
-        expected_otp = str(session.get("otp_code") or "").strip()
-        clean_code = str(code).replace("-", "").strip().upper()
-        if clean_code != expected_otp:
-            raise ValueError("Incorrect email verification code. Please try again.")
+        if session["status"] != "STEP_UP":
+            raise ValueError(
+                "This transaction does not require step-up verification."
+            )
+        _verify_step_up_credential(customer, session, code, step_up_method)
     else:
         method = session["verification_method"]
-        expected = (
-            customer["pin"]
-            if method == "PIN"
-            else session.get("otp_code")
-        )
-        code_matches = (
-            verify_password(str(code).strip(), customer["pin_hash"])
-            if customer.get("pin_hash")
-            else str(code).strip() == str(expected)
-        )
+        if method == "PIN" and customer.get("pin_hash"):
+            code_matches = verify_password(
+                str(code).strip(), customer["pin_hash"]
+            )
+        else:
+            expected = (
+                customer.get("pin")
+                if method == "PIN"
+                else session.get("otp_code")
+            )
+            code_matches = str(code).strip() == str(expected)
         if not code_matches:
             raise ValueError("Incorrect PIN/OTP. Please try again.")
-    if step_up and session["status"] != "STEP_UP":
-        raise ValueError(
-            "This transaction does not require step-up verification."
-        )
-
     transaction_type = session["transaction_type"]
     meta = TRANSACTION_TYPES.get(transaction_type, {})
     amount = float(session["amount"])
@@ -653,6 +719,8 @@ def verify_transaction(session_id, code, step_up=False):
     ip_address = session.get("ip_address") or customer["base_ip"]
 
     scenarios = _parse_scenarios(session.get("scenario") or "NORMAL")
+    baseline = get_customer_baseline(customer["ref"])
+    baseline_count = int(baseline.get("count") or 0)
     security_history = get_customer_security_history(customer["ref"])
     known_devices = set(customer["devices"]) | security_history["device_ids"]
     device_change = bool(
@@ -661,7 +729,10 @@ def verify_transaction(session_id, code, step_up=False):
     known_ips = security_history["ip_addresses"] or {customer["base_ip"]}
     provided_address = ipaddress.ip_address(ip_address)
     expected_networks = [
-        ipaddress.ip_network(f"{known_ip}/24", strict=False)
+        ipaddress.ip_network(
+            f"{known_ip}/{24 if ipaddress.ip_address(known_ip).version == 4 else 64}",
+            strict=False,
+        )
         for known_ip in known_ips
     ]
     ip_network_mismatch = not any(
@@ -669,7 +740,6 @@ def verify_transaction(session_id, code, step_up=False):
         and provided_address in network
         for network in expected_networks
     )
-    expected_network = ", ".join(sorted(str(network) for network in expected_networks))
     location = (
         (session.get("location_latitude"), session.get("location_longitude"))
         if session.get("location_latitude") is not None
@@ -679,19 +749,68 @@ def verify_transaction(session_id, code, step_up=False):
     location_mismatch = bool(
         location
         and security_history["locations"]
-        and all(
-            abs(location[0] - previous[0]) > 0.5
-            or abs(location[1] - previous[1]) > 0.5
+        and min(
+            _distance_km(location, previous)
             for previous in security_history["locations"]
+        ) > 50
+    )
+    now_utc = datetime.now(timezone.utc)
+    impossible_travel = _has_impossible_travel(
+        location,
+        security_history.get("trusted_locations", []),
+        now_utc,
+    )
+    device_first_seen = security_history.get("device_first_seen", {}).get(device_id)
+    account_created_at = security_history.get("account_created_at")
+    try:
+        account_age_days = max(
+            0.0,
+            (now_utc - datetime.fromisoformat(
+                account_created_at.replace("Z", "+00:00")
+            )).total_seconds() / 86400,
+        ) if account_created_at else 365.0
+    except (TypeError, ValueError):
+        account_age_days = 0.0
+    try:
+        device_age_days = max(
+            0.0,
+            (now_utc - datetime.fromisoformat(
+                device_first_seen.replace("Z", "+00:00")
+            )).total_seconds() / 86400,
+        ) if device_first_seen else (
+            account_age_days if device_id in customer["devices"] else 0.0
         )
-    )
+    except (TypeError, ValueError):
+        device_age_days = 0.0
+    cold_start = baseline_count < 5
+    new_account = account_age_days < 1
 
-    velocity_count = count_velocity_sessions(
-        customer["ref"], window_minutes=3
+    velocity = get_customer_velocity_summary(customer["ref"])
+    recipient_velocity = get_recipient_velocity_summary(
+        customer["ref"], recipient
     )
-    velocity_spike = velocity_count >= 3
-    baseline = get_customer_baseline(customer["ref"])
-    baseline_count = int(baseline.get("count") or 0)
+    velocity_spike = velocity["5m_count"] >= 3
+    if baseline.get("count", 0) >= 5:
+        robust_amount_limit = (
+            float(baseline["median_amount"])
+            + max(
+                3 * 1.4826 * float(baseline["median_absolute_deviation"]),
+                float(baseline["median_amount"]) * 0.5,
+            )
+        )
+        velocity_spike = velocity_spike or (
+            velocity["5m_count"] >= 2
+            and velocity["5m_amount"] > robust_amount_limit * 2
+        )
+        average_daily_count = float(
+            baseline.get("avg_transactions_per_day") or 0
+        )
+        expected_hourly_count = average_daily_count / 24
+        velocity_spike = velocity_spike or (
+            velocity["1h_count"] >= max(5, expected_hourly_count * 3)
+            and velocity["1h_amount"] > robust_amount_limit * 3
+        )
+    recipient_burst = recipient_velocity["count"] >= 3
     average_daily_frequency = float(
         baseline.get("avg_transactions_per_day") or 0.0
     )
@@ -706,9 +825,13 @@ def verify_transaction(session_id, code, step_up=False):
     # ------------------------------------------------
     # Customer behavioural baseline (historical pattern)
     # ------------------------------------------------
-    baseline_avg_amount = float(baseline.get("avg_amount") or 0.0)
+    baseline_median_amount = float(baseline.get("median_amount") or 0.0)
+    baseline_mad = float(baseline.get("median_absolute_deviation") or 0.0)
     amount_deviation = bool(
-        baseline_count >= 2 and amount > baseline_avg_amount * 1.5
+        baseline_count >= 5
+        and amount
+        > baseline_median_amount
+        + max(3 * 1.4826 * baseline_mad, baseline_median_amount * 0.5)
     )
 
     hour_local = datetime.now(GHANA_TIMEZONE).hour
@@ -734,9 +857,20 @@ def verify_transaction(session_id, code, step_up=False):
         "device_change": device_change,
         "ip_network_mismatch": ip_network_mismatch,
         "location_mismatch": location_mismatch,
+        "impossible_travel": impossible_travel,
         "recent_sim_swap": recent_sim_swap,
         "scenario": _join_scenarios(scenarios),
         "velocity_spike": velocity_spike,
+        "velocity_5m_count": velocity["5m_count"],
+        "velocity_5m_amount": velocity["5m_amount"],
+        "velocity_1h_count": velocity["1h_count"],
+        "velocity_1h_amount": velocity["1h_amount"],
+        "recipient_burst": recipient_burst,
+        "recipient_5m_count": recipient_velocity["count"],
+        "recipient_5m_amount": recipient_velocity["amount"],
+        "cold_start": cold_start,
+        "new_account": new_account,
+        "device_age_days": round(device_age_days, 3),
         "frequency_spike": frequency_spike,
         "amount_deviation": amount_deviation,
         "unusual_hour": unusual_hour,
@@ -757,30 +891,39 @@ def verify_transaction(session_id, code, step_up=False):
 
     signals = {
         "device_change": device_change,
+        "device_first_seen": not bool(device_first_seen),
+        "device_age_days": round(device_age_days, 3),
+        "new_account": new_account,
+        "account_age_days": round(account_age_days, 3),
+        "cold_start": cold_start,
         "ip_network_mismatch": ip_network_mismatch,
         "location_mismatch": location_mismatch,
+        "impossible_travel": impossible_travel,
         "recipient_novel": recipient_novel_flag,
         "velocity_spike": velocity_spike,
+        "velocity_5m_count": velocity["5m_count"],
+        "velocity_5m_amount": round(velocity["5m_amount"], 2),
+        "velocity_1h_count": velocity["1h_count"],
+        "velocity_1h_amount": round(velocity["1h_amount"], 2),
+        "recipient_burst": recipient_burst,
+        "recipient_5m_count": recipient_velocity["count"],
+        "recipient_5m_amount": round(recipient_velocity["amount"], 2),
         "frequency_spike": frequency_spike,
         "recent_sim_swap": recent_sim_swap,
         "amount_deviation": amount_deviation,
         "unusual_hour": unusual_hour,
-        "expected_network": expected_network,
-        "ip_address": ip_address,
-        "device_id": device_id,
         "scenarios": scenarios,
     }
+    transaction["risk_signals"] = signals
+    transaction["new_account"] = new_account
+    transaction["device_age_days"] = round(device_age_days, 3)
 
     transaction["live_mtn"] = live_mtn
     outcome = _resolve_outcome(
         session_id, risk_level, assessment, reference, transaction,
         signals, amount, dest_ref, origin_ref, origin_new, dest_new,
         session["status"], session.get("otp_code"), ip_address, device_id,
-        step_up_email=(
-            customer.get("email")
-            if customer.get("email_verified") is True
-            else None
-        ),
+        step_up_email=customer.get("email"),
         live_mtn=live_mtn,
         customer=customer,
     )
@@ -811,7 +954,30 @@ def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
         )
 
     if risk_level == "MEDIUM":
-        if not step_up_email:
+        passport_available = bool(
+            customer
+            and str(customer.get("id_type") or "").upper() == "PASSPORT"
+            and (customer.get("id_hash") or customer.get("id_number"))
+        )
+        email_result = None
+        step_up_otp = None
+        email_available = bool(step_up_email)
+        if email_available:
+            step_up_otp = f"{secrets.randbelow(1_000_000):06d}"
+            email_result = send_step_up_email(
+                recipient_email=step_up_email,
+                otp_code=step_up_otp,
+                transaction_details={
+                    "amount": format(amount, ".2f"),
+                    "currency": "EUR" if live_mtn else "GHS",
+                    "recipient": dest_ref,
+                    "customer_name": (customer or {}).get("name", "Valued Customer"),
+                    "reasons": assessment["reasons"],
+                },
+            )
+            email_available = not live_mtn or email_result["delivered"]
+
+        if not email_available and not passport_available:
             _finalize(
                 "BLOCKED", "STEP_UP_UNAVAILABLE", transaction, assessment,
                 ip_address, device_id
@@ -821,14 +987,13 @@ def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
                 "BLOCKED",
                 risk_level=risk_level,
                 risk_score=assessment["risk_score"],
-                reason="No verified email is available for step-up verification",
+                reason="No usable email or passport verification method is available",
             )
             return {
                 "status": "BLOCKED",
                 "message": (
-                    "This transaction was blocked because no verified email "
-                    "is available for the additional security check. "
-                    "Money has NOT left your wallet."
+                    "This transaction was blocked because no verification "
+                    "method is available. Money has NOT left your wallet."
                 ),
                 "transaction_reference": reference,
                 "amount": amount,
@@ -841,64 +1006,43 @@ def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
                 "approved": False,
             }
 
-        step_up_otp = f"{secrets.randbelow(1_000_000):06d}"
-        email_result = send_step_up_email(
-            recipient_email=step_up_email,
-            otp_code=step_up_otp,
-            transaction_details={
-                "amount": format(amount, ".2f"),
-                "currency": "EUR" if live_mtn else "GHS",
-                "recipient": dest_ref,
-                "customer_name": (customer or {}).get("name", "Valued Customer"),
-                "reasons": assessment["reasons"],
-            },
-        )
-        if live_mtn and not email_result["delivered"]:
-            _finalize(
-                "BLOCKED", "STEP_UP_EMAIL_UNAVAILABLE", transaction, assessment,
-                ip_address, device_id
-            )
-            update_momo_session_status(
-                session_id,
-                "BLOCKED",
-                risk_level=risk_level,
-                risk_score=assessment["risk_score"],
-                reason="Verified email delivery failed",
-            )
-            return {
-                "status": "BLOCKED",
-                "message": (
-                    "This transfer was blocked because the verification email "
-                    "could not be delivered. No money left your wallet."
-                ),
-                "transaction_reference": reference,
-                "risk_score": assessment["risk_score"],
-                "risk_level": risk_level,
-                "decision": "STEP-UP DELIVERY FAILED",
-                "reasons": assessment["reasons"],
-                "signals": signals,
-                "approved": False,
-                "live_mtn": True,
-            }
         update_momo_session_status(
             session_id, "STEP_UP",
             reason="Additional verification required",
-            otp_code=step_up_otp,
+            otp_code=step_up_otp if email_available else None,
             risk_level=risk_level, risk_score=assessment["risk_score"],
+            risk_signals=json.dumps(signals, sort_keys=True),
+            assessment_reasons=json.dumps(assessment["reasons"]),
         )
+        events.publish(
+            "transaction",
+            {"reason": "step_up_required", "session_id": session_id},
+        )
+        events.publish("stats", {"reason": "step_up_required"})
         return {
             "status": "STEP_UP_REQUIRED",
-            "message": (
-                "Suspicious activity detected. An OTP security code has been dispatched "
-                f"to your email ({_mask_email(step_up_email)}). Enter it to complete your transfer."
-            ),
+            "message": "Suspicious activity detected. Verify with your email code or passport number.",
             "session_id": session_id,
             "step_up": True,
-            "verification_method": "EMAIL",
-            "verification_destination": _mask_email(step_up_email),
-            "delivery_status": email_result["delivery_status"] if live_mtn else "SIMULATED_NOT_SENT",
-            "smtp_configured": email_result["smtp_configured"],
-            **({"demo_hint": step_up_otp} if not live_mtn else {}),
+            "verification_method": "EMAIL_OR_PASSPORT",
+            "email_available": email_available,
+            "passport_available": passport_available,
+            "verification_destination": (
+                _mask_email(step_up_email) if email_available else None
+            ),
+            "delivery_status": (
+                email_result["delivery_status"]
+                if email_result and live_mtn
+                else "SIMULATED_NOT_SENT" if email_result else None
+            ),
+            "smtp_configured": (
+                email_result["smtp_configured"] if email_result else False
+            ),
+            **(
+                {"demo_hint": step_up_otp}
+                if email_available and not live_mtn
+                else {}
+            ),
             "reasons": assessment["reasons"],
             "risk_score": assessment["risk_score"],
             "signals": signals,
@@ -946,10 +1090,14 @@ def _finalize(status, audit_action, transaction, assessment, ip_address, device_
     tx_id = create_transaction(transaction)
     create_risk_assessment(tx_id, assessment)
 
+    signal_names = [
+        key for key, value in transaction.get("risk_signals", {}).items()
+        if value is True
+    ]
     audit_details = (
         f"Risk score: {assessment['risk_score']:.4f}; "
         f"decision: {assessment['decision']}; "
-        f"IP: {ip_address}; Device: {device_id}"
+        f"signal flags: {', '.join(signal_names) or 'none'}"
     )
 
     if status == "BLOCKED":
