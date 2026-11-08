@@ -58,7 +58,7 @@ For the proposed 3NF design and ERD of the PaySim-format training CSV, see
 
 | Requirement | Current implementation | Gap / status |
 |---|---|---|
-| Post-authentication behavioural layer | PIN/OTP precedes scoring in `momo_simulator.py`; low approves, medium challenges, high blocks and opens a case; explicit behavioral/security signals set a minimum medium-risk score | Implemented in the simulator flow; direct scoring endpoint is assessment-only and does not execute transaction controls. Thresholds still require calibration against labelled data. |
+| Post-authentication behavioural layer | PIN/OTP precedes scoring in `momo_simulator.py`; low approves, medium challenges, high blocks and opens a case; explicit behavioral/security signals set a minimum medium-risk score while preserving their weighted rule-score contribution above that floor | Implemented in the simulator flow; direct scoring endpoint is assessment-only and does not execute transaction controls. Thresholds still require calibration against labelled data. |
 | Customer baseline (amount, timing, frequency, recipient, velocity) | Historical customer transaction records provide amount, Ghana-local transaction hour, daily frequency and per-customer recipient counts; velocity counts sessions opened within the configured window | Implemented using available prototype history and normalized to Africa/Accra time. Sparse/new-account history remains a cold-start limitation, and the small fixed demo population is not representative. |
 | Isolation Forest trained on PaySim | The default runtime loads the model, scaler, medians, and evaluation manifest from `backend/models/paysim-runtime`; the manifest identifies the local PaySim dataset hash, scikit-learn 1.6.1, seed 42, and chronological split. The training pipeline reproduces the run. | The active model's Isolation Forest holdout metrics are visible in Adaptive Intelligence. This is synthetic-data evidence only and does not establish real-customer performance or calibrate the separate hybrid policy. |
 | Security signals | Device, IP/network, SIM-swap, velocity and unusual-hour signals are explicitly selected through repeatable simulator scenarios; typed IP inputs are also evaluated against the demo baseline | Synthetic signals only. These inputs do not originate from a telecom or network provider and must not be described as live telemetry. |
@@ -84,6 +84,7 @@ For the proposed 3NF design and ERD of the PaySim-format training CSV, see
 4. Confirm the PIN. The isolated signal should produce MEDIUM risk and request
    the additional simulated email code. Use the UI's displayed demo code, then
    point out the “Recent SIM change” reason and step-up decision in the result.
+   The risk-reasons list is shown for approved results too.
    The code is not emailed or sent by SMS; avoiding SMS to the affected number
    is part of the scenario being illustrated.
 5. Explain that this demonstrates the prototype's response to a supplied SIM

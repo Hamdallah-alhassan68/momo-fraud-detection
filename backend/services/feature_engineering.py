@@ -86,7 +86,10 @@ def build_features(
     # Ratios
     # ----------------------------------------------
 
-    if oldbalance_org > 0:
+    if np.isnan(oldbalance_org):
+        amount_to_origin_balance = np.nan
+
+    elif oldbalance_org > 0:
 
         amount_to_origin_balance = (
             amount / oldbalance_org
@@ -96,7 +99,10 @@ def build_features(
 
         amount_to_origin_balance = 0.0
 
-    if oldbalance_dest > 0:
+    if np.isnan(oldbalance_dest):
+        amount_to_dest_balance = np.nan
+
+    elif oldbalance_dest > 0:
 
         amount_to_dest_balance = (
             amount / oldbalance_dest
@@ -110,8 +116,10 @@ def build_features(
     # Recipient novelty
     # ----------------------------------------------
 
-    recipient_novel = int(
-        dest_previous_count == 0
+    recipient_novel = (
+        np.nan
+        if dest_previous_count is None
+        else int(dest_previous_count == 0)
     )
 
     # ----------------------------------------------
@@ -158,7 +166,7 @@ def build_features(
             amount_to_dest_balance,
 
         "dest_previous_count":
-            int(dest_previous_count),
+            np.nan if dest_previous_count is None else int(dest_previous_count),
 
         "recipient_novel":
             recipient_novel,

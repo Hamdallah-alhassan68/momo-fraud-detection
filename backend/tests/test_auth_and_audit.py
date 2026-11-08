@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 
@@ -145,6 +146,19 @@ class RbacAndAuthenticationIntegrationTests(unittest.TestCase):
         self.assertEqual(roles["admin"], "admin")
         self.assertEqual(roles["analyst_kwame"], "analyst")
         self.assertEqual(roles["viewer_ama"], "viewer")
+
+    def test_demo_admin_seeding_can_be_disabled_for_hosted_environments(self):
+        original_db = database.DATABASE_PATH
+        temp_dir = tempfile.TemporaryDirectory()
+        try:
+            database.DATABASE_PATH = Path(temp_dir.name) / "hosted_rbac.sqlite3"
+            database.initialize_database()
+            with patch.dict(os.environ, {"MOMO_ENABLE_DEMO_ADMIN_USERS": "false"}):
+                self.assertEqual(auth.seed_default_admin_users(), [])
+            self.assertEqual(database.list_admin_users(), [])
+        finally:
+            database.DATABASE_PATH = original_db
+            temp_dir.cleanup()
 
     def test_user_authentication_flow_and_lockout(self):
         # 1. Correct credentials succeed

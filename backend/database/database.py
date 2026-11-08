@@ -480,6 +480,45 @@ def initialize_database():
         )
         """
     )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sandbox_customer_profiles (
+            phone_number TEXT PRIMARY KEY,
+            customer_ref TEXT UNIQUE NOT NULL,
+            full_name TEXT NOT NULL,
+            id_type TEXT NOT NULL,
+            id_hash TEXT NOT NULL,
+            email TEXT NOT NULL,
+            email_verified INTEGER NOT NULL DEFAULT 0,
+            pin_hash TEXT NOT NULL,
+            balance REAL NOT NULL DEFAULT 10000,
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS customer_security_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_ref TEXT NOT NULL,
+            session_id TEXT,
+            event_type TEXT NOT NULL,
+            device_id TEXT,
+            ip_address TEXT,
+            location_latitude REAL,
+            location_longitude REAL,
+            trusted INTEGER NOT NULL DEFAULT 0,
+            observed_at TEXT NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_customer_security_history
+        ON customer_security_signals(customer_ref, trusted, observed_at)
+        """
+    )
     # ==================================================
     # INDEXES
     # ==================================================
@@ -535,6 +574,16 @@ def initialize_database():
     _ensure_column(connection, "fraud_cases", "contact_outcome", "TEXT")
     _ensure_column(connection, "fraud_cases", "contact_at", "TEXT")
     _ensure_column(connection, "momo_sessions", "scenario", "TEXT DEFAULT 'NORMAL'")
+    _ensure_column(connection, "momo_sessions", "live_mtn", "INTEGER DEFAULT 0")
+    _ensure_column(connection, "momo_sessions", "mtn_reference_id", "TEXT")
+    _ensure_column(connection, "momo_sessions", "transaction_reference", "TEXT")
+    _ensure_column(connection, "transactions", "live_mtn", "INTEGER DEFAULT 0")
+    _ensure_column(connection, "transactions", "mtn_reference_id", "TEXT")
+    _ensure_column(connection, "transactions", "mtn_financial_id", "TEXT")
+    _ensure_column(connection, "transactions", "location_latitude", "REAL")
+    _ensure_column(connection, "transactions", "location_longitude", "REAL")
+    _ensure_column(connection, "momo_sessions", "location_latitude", "REAL")
+    _ensure_column(connection, "momo_sessions", "location_longitude", "REAL")
     _ensure_column(connection, "audit_logs", "prev_hash", "TEXT")
     _ensure_column(connection, "audit_logs", "entry_hash", "TEXT")
     _ensure_column(connection, "audit_logs", "hmac_signature", "TEXT")
@@ -703,9 +752,14 @@ def create_transaction(transaction):
                 created_at,
                 ip_address,
                 device_id,
-                status
+                status,
+                live_mtn,
+                mtn_reference_id,
+                mtn_financial_id,
+                location_latitude,
+                location_longitude
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 transaction["transaction_reference"],
@@ -728,7 +782,12 @@ def create_transaction(transaction):
                 now,
                 transaction.get("ip_address"),
                 transaction.get("device_id"),
-                transaction.get("status", "SCORED")
+                transaction.get("status", "SCORED"),
+                int(transaction.get("live_mtn", False)),
+                transaction.get("mtn_reference_id"),
+                transaction.get("mtn_financial_id"),
+                transaction.get("location_latitude"),
+                transaction.get("location_longitude")
             )
         )
 
@@ -741,6 +800,26 @@ def create_transaction(transaction):
         connection.rollback()
         raise
 
+    finally:
+        connection.close()
+
+
+def update_mtn_transaction_status(reference_id, status, financial_id=None):
+    """Update an MTN-backed transaction after a provider status check."""
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE transactions
+            SET status = ?,
+                mtn_financial_id = COALESCE(?, mtn_financial_id)
+            WHERE mtn_reference_id = ?
+            """,
+            (status, financial_id, reference_id),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
     finally:
         connection.close()
 
@@ -1430,6 +1509,9 @@ def create_momo_session(
     device_id,
     ip_address,
     scenario: str = "NORMAL",
+    live_mtn: int = 0,
+    location_latitude=None,
+    location_longitude=None,
 ):
     """Create an in-flight transaction session for the simulated MoMo flow."""
     connection = get_connection()
@@ -1449,11 +1531,14 @@ def create_momo_session(
             device_id,
             ip_address,
             scenario,
+            live_mtn,
+            location_latitude,
+            location_longitude,
             status,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
         """,
         (
             session_id,
@@ -1466,6 +1551,9 @@ def create_momo_session(
             device_id,
             ip_address,
             scenario,
+            int(live_mtn),
+            location_latitude,
+            location_longitude,
             now,
             now
         )
@@ -1546,6 +1634,27 @@ def count_velocity_sessions(customer_ref, window_minutes=3):
         )
         result = cursor.fetchone()
         return int(result["count"])
+    finally:
+        connection.close()
+
+
+def has_pending_mtn_transfer(customer_ref):
+    """Return whether a wallet already has an unresolved MTN transfer."""
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT 1
+            FROM momo_sessions
+            WHERE customer_ref = ?
+              AND live_mtn = 1
+              AND status = 'PENDING_MTN'
+            LIMIT 1
+            """,
+            (customer_ref,),
+        )
+        return cursor.fetchone() is not None
     finally:
         connection.close()
 
@@ -2065,8 +2174,11 @@ def get_customer_baseline(customer_ref):
             SELECT amount, timestamp, origin_account, destination_account,
                    transaction_type
             FROM transactions
-            WHERE origin_account = ?
-               OR (transaction_type = 'CASH_IN' AND destination_account = ?)
+            WHERE (
+                origin_account = ?
+                OR (transaction_type = 'CASH_IN' AND destination_account = ?)
+            )
+              AND status IN ('COMPLETED', 'APPROVED')
             ORDER BY timestamp
             """,
             (customer_ref, customer_ref)
@@ -2137,13 +2249,192 @@ def get_customer_recipient_history(customer_ref, recipient_ref):
             """
             SELECT COUNT(*) AS count
             FROM transactions
-            WHERE (origin_account = ? AND destination_account = ?)
-               OR (transaction_type = 'CASH_IN'
-                   AND destination_account = ? AND origin_account = ?)
+            WHERE (
+                (origin_account = ? AND destination_account = ?)
+                OR (transaction_type = 'CASH_IN'
+                    AND destination_account = ? AND origin_account = ?)
+            )
+              AND status IN ('COMPLETED', 'APPROVED')
             """,
             (customer_ref, recipient_ref, customer_ref, recipient_ref),
         ).fetchone()
         return int(row["count"])
+    finally:
+        connection.close()
+
+
+def get_customer_security_history(customer_ref):
+    """Return previously trusted device, network, and coarse location values."""
+    connection = get_connection()
+    try:
+        transaction_rows = connection.execute(
+            """
+            SELECT DISTINCT device_id, ip_address,
+                   location_latitude, location_longitude
+            FROM transactions
+            WHERE origin_account = ?
+              AND status IN ('COMPLETED', 'APPROVED')
+            """,
+            (customer_ref,),
+        ).fetchall()
+        signal_rows = connection.execute(
+            """
+            SELECT DISTINCT device_id, ip_address,
+                   location_latitude, location_longitude
+            FROM customer_security_signals
+            WHERE customer_ref = ? AND trusted = 1
+            """,
+            (customer_ref,),
+        ).fetchall()
+        rows = list(transaction_rows) + list(signal_rows)
+        return {
+            "device_ids": {
+                row["device_id"] for row in rows if row["device_id"]
+            },
+            "ip_addresses": {
+                row["ip_address"] for row in rows if row["ip_address"]
+            },
+            "locations": [
+                (row["location_latitude"], row["location_longitude"])
+                for row in rows
+                if row["location_latitude"] is not None
+                and row["location_longitude"] is not None
+            ],
+        }
+    finally:
+        connection.close()
+
+
+def create_sandbox_customer_profile(
+    phone_number,
+    customer_ref,
+    full_name,
+    id_type,
+    id_hash,
+    email,
+    pin_hash,
+    balance=10000.0,
+):
+    """Persist a sandbox-only profile with hashed identity and PIN values."""
+    connection = get_connection()
+    try:
+        connection.execute(
+            """
+            INSERT INTO sandbox_customer_profiles (
+                phone_number, customer_ref, full_name, id_type, id_hash,
+                email, email_verified, pin_hash, balance, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'ACTIVE', ?)
+            """,
+            (
+                phone_number,
+                customer_ref,
+                full_name,
+                id_type,
+                id_hash,
+                email,
+                pin_hash,
+                float(balance),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def get_sandbox_customer_profile(phone_number):
+    """Fetch a sandbox profile by normalized phone or wallet reference."""
+    connection = get_connection()
+    try:
+        row = connection.execute(
+            """
+            SELECT phone_number, customer_ref, full_name, id_type, id_hash,
+                   email, email_verified, pin_hash, balance, status
+            FROM sandbox_customer_profiles
+            WHERE phone_number = ? OR customer_ref = ?
+            """,
+            (phone_number, phone_number),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        connection.close()
+
+
+def update_sandbox_customer_email(phone_number, email):
+    """Persist an email address after it has been ownership-verified."""
+    connection = get_connection()
+    try:
+        cursor = connection.execute(
+            """
+            UPDATE sandbox_customer_profiles
+            SET email = ?, email_verified = 1
+            WHERE phone_number = ?
+            """,
+            (email, phone_number),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+    finally:
+        connection.close()
+
+
+def record_customer_security_signal(
+    customer_ref,
+    event_type,
+    device_id,
+    ip_address,
+    location_latitude=None,
+    location_longitude=None,
+    session_id=None,
+    trusted=False,
+):
+    """Persist privacy-disclosed device, network, and coarse location observations."""
+    connection = get_connection()
+    try:
+        cursor = connection.execute(
+            """
+            INSERT INTO customer_security_signals (
+                customer_ref, session_id, event_type, device_id, ip_address,
+                location_latitude, location_longitude, trusted, observed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                customer_ref,
+                session_id,
+                event_type,
+                device_id,
+                ip_address,
+                location_latitude,
+                location_longitude,
+                int(trusted),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        connection.commit()
+        return int(cursor.lastrowid)
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def trust_customer_security_signal(session_id):
+    """Mark a signal observation as established after a successful transaction."""
+    connection = get_connection()
+    try:
+        connection.execute(
+            """
+            UPDATE customer_security_signals
+            SET trusted = 1
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        )
+        connection.commit()
     finally:
         connection.close()
 

@@ -580,7 +580,7 @@ async function loadAlerts() {
       </p>
       {!isAdmin && (
         <div className="role-restriction-note">
-          🔒 Wallet freeze/unfreeze actions require Administrator privileges (current role: {role}).
+          Wallet freeze/unfreeze actions require Administrator privileges (current role: {role}).
         </div>
       )}
     </div>

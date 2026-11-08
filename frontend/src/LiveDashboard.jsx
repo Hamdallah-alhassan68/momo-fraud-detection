@@ -321,7 +321,7 @@ export default function LiveDashboard() {
     return (
       <section className="live-dashboard">
         <p className="dashboard-loading">
-          {error ? `⚠️ ${error}` : "Loading live dashboard…"}
+          {error ? error : "Loading live dashboard…"}
         </p>
       </section>
     );
@@ -455,11 +455,13 @@ export default function LiveDashboard() {
               <tr>
                 <th>Time</th>
                 <th>Reference</th>
+                <th>Sender</th>
+                <th>Recipient</th>
                 <th>Type</th>
                 <th>Amount</th>
-                <th>Risk</th>
+                <th>Risk Score</th>
                 <th>Status</th>
-                <th>IP address</th>
+                <th>IP Address</th>
                 <th>Device</th>
               </tr>
             </thead>
@@ -473,6 +475,8 @@ export default function LiveDashboard() {
                   <tr key={row.id}>
                     <td className="mono">{formatTime(row.created_at)}</td>
                     <td className="mono">{row.transaction_reference}</td>
+                    <td className="mono">{row.origin_account || "—"}</td>
+                    <td className="mono">{row.destination_account || "—"}</td>
                     <td>{row.transaction_type}</td>
                     <td>{currency(row.amount)}</td>
                     <td>

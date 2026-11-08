@@ -18,6 +18,7 @@ from services.input_validation import (
     is_valid_wallet_reference,
     validate_ip_address,
 )
+from services.fraud_detector import fraud_detector
 from services.momo_simulator import initiate_transaction, _ensure_customer
 
 
@@ -63,7 +64,7 @@ class SyntheticScenarioEvaluationTests(unittest.TestCase):
         )
         self.assertEqual(
             result["summary"]["expected_risk_level_counts"],
-            {"LOW": 3, "MEDIUM": 9, "HIGH": 1},
+            {"LOW": 2, "MEDIUM": 10, "HIGH": 1},
         )
         for scenario in result["scenarios"]:
             self.assertGreaterEqual(scenario["mean_scoring_latency_ms"], 0)
@@ -519,6 +520,7 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
                 "transaction_type": "TRANSFER",
                 "origin_account": "WALLET-1001",
                 "destination_account": destination,
+                "status": "COMPLETED",
                 "timestamp": timestamp,
             }
         )
@@ -706,6 +708,26 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
                 scenario="UNSUPPORTED",
             )
 
+        for scenario in (
+            "IP_MISMATCH",
+            "VELOCITY_SPIKE",
+            "FREQUENCY_SPIKE",
+            "AMOUNT_DEVIATION",
+            "UNUSUAL_HOUR",
+        ):
+            with self.subTest(scenario=scenario):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "Behavioral risk signals are calculated",
+                ):
+                    momo_simulator.initiate_transaction(
+                        customer_ref="WALLET-1001",
+                        transaction_type="TRANSFER",
+                        amount=25,
+                        recipient="WALLET-2001",
+                        scenario=scenario,
+                    )
+
     def test_simulator_accepts_multiple_scenarios(self):
         from services import momo_simulator
 
@@ -714,11 +736,10 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
             transaction_type="TRANSFER",
             amount=25,
             recipient="WALLET-2001",
+            ip_address="203.0.113.42",
             scenario=[
                 "DEVICE_CHANGE",
-                "IP_MISMATCH",
                 "RECENT_SIM_SWAP",
-                "AMOUNT_DEVIATION",
             ],
         )
 
@@ -726,15 +747,13 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
         stored = database.get_momo_session(session["session_id"])
         self.assertEqual(
             stored["scenario"],
-            "RECENT_SIM_SWAP,DEVICE_CHANGE,IP_MISMATCH,AMOUNT_DEVIATION",
+            "RECENT_SIM_SWAP,DEVICE_CHANGE",
         )
         self.assertEqual(
             session["scenarios"],
             [
                 "RECENT_SIM_SWAP",
                 "DEVICE_CHANGE",
-                "IP_MISMATCH",
-                "AMOUNT_DEVIATION",
             ],
         )
 
@@ -743,19 +762,60 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
             self.assertTrue(result["signals"]["recent_sim_swap"])
             self.assertTrue(result["signals"]["device_change"])
             self.assertTrue(result["signals"]["ip_network_mismatch"])
-            self.assertTrue(result["signals"]["amount_deviation"])
             self.assertEqual(
                 result["signals"]["scenarios"],
                 [
                     "RECENT_SIM_SWAP",
                     "DEVICE_CHANGE",
-                    "IP_MISMATCH",
-                    "AMOUNT_DEVIATION",
                 ],
             )
         finally:
             momo_simulator.FROZEN_UNTIL.pop("WALLET-1001", None)
             momo_simulator._rebuild_balances()
+
+    def test_simulated_security_signals_raise_score_and_include_reasons(self):
+        transaction = {
+            "amount": 25.0,
+            "transaction_type": "TRANSFER",
+            "origin_account": "WALLET-1001",
+            "destination_account": "WALLET-2001",
+            "old_balance_origin": 5000.0,
+            "new_balance_origin": 4975.0,
+            "old_balance_destination": 1600.0,
+            "new_balance_destination": 1625.0,
+        }
+
+        normal = fraud_detector.assess_transaction(
+            transaction,
+            dest_previous_count=5,
+        )
+        sim_swap = fraud_detector.assess_transaction(
+            {**transaction, "recent_sim_swap": True},
+            dest_previous_count=5,
+        )
+        new_device = fraud_detector.assess_transaction(
+            {**transaction, "device_change": True},
+            dest_previous_count=5,
+        )
+        combined = fraud_detector.assess_transaction(
+            {
+                **transaction,
+                "recent_sim_swap": True,
+                "device_change": True,
+            },
+            dest_previous_count=5,
+        )
+
+        self.assertGreater(sim_swap["risk_score"], normal["risk_score"])
+        self.assertGreater(new_device["risk_score"], normal["risk_score"])
+        self.assertGreater(
+            combined["risk_score"],
+            max(sim_swap["risk_score"], new_device["risk_score"]),
+        )
+        self.assertIn("Recent SIM change", sim_swap["reasons"])
+        self.assertIn("New or changed device", new_device["reasons"])
+        self.assertIn("Recent SIM change", combined["reasons"])
+        self.assertIn("New or changed device", combined["reasons"])
 
     def test_simulator_supports_custom_wallet_reference(self):
         from services import momo_simulator
@@ -870,6 +930,139 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         self.assertFalse(result["approved"])
         self.assertIn("no verified email", result["message"])
         self.assertNotIn("demo_hint", result)
+
+    def test_live_step_up_fails_closed_when_email_is_not_delivered(self):
+        assessment = {
+            "risk_score": 0.45,
+            "risk_level": "MEDIUM",
+            "decision": "STEP-UP VERIFICATION",
+            "isolation_forest_score": 0.2,
+            "rule_score": 0.45,
+            "reasons": ["Recent SIM change"],
+        }
+        initial_balance = self.simulator.BALANCES["WALLET-1001"]
+        session = self.simulator.initiate_transaction(
+            customer_ref="WALLET-1001",
+            transaction_type="TRANSFER",
+            amount=25,
+            recipient="0242002002",
+            scenario="RECENT_SIM_SWAP",
+            live_mtn=True,
+        )
+        with patch.object(
+            fraud_detector, "assess_transaction", return_value=assessment
+        ), patch.object(
+            self.simulator,
+            "send_step_up_email",
+            return_value={
+                "delivered": False,
+                "delivery_status": "LOCAL_OUTBOX",
+                "smtp_configured": False,
+            },
+        ):
+            result = self.simulator.verify_transaction(session["session_id"], "2233")
+
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertNotIn("demo_hint", result)
+        self.assertEqual(
+            self.simulator.BALANCES["WALLET-1001"], initial_balance
+        )
+        self.assertEqual(
+            self.simulator.get_momo_session(session["session_id"])["status"],
+            "BLOCKED",
+        )
+
+    def test_live_transfer_failure_does_not_complete_or_debit_wallet(self):
+        from services.mtn_disbursement import MtnDisbursementError
+
+        assessment = {
+            "risk_score": 0.1,
+            "risk_level": "LOW",
+            "decision": "APPROVE",
+            "isolation_forest_score": 0.1,
+            "rule_score": 0,
+            "reasons": [],
+        }
+        initial_balance = self.simulator.BALANCES["WALLET-1001"]
+        session = self.simulator.initiate_transaction(
+            customer_ref="WALLET-1001",
+            transaction_type="TRANSFER",
+            amount=25,
+            recipient="0242002002",
+            live_mtn=True,
+        )
+        mtn_client = unittest.mock.Mock()
+        mtn_client.transfer.side_effect = MtnDisbursementError(
+            "MTN rejected the transfer", status_code=400
+        )
+        with patch.object(
+            fraud_detector, "assess_transaction", return_value=assessment
+        ), patch.object(
+            self.simulator,
+            "get_mtn_disbursement_client",
+            return_value=mtn_client,
+        ):
+            result = self.simulator.verify_transaction(session["session_id"], "2233")
+
+        self.assertEqual(result["status"], "FAILED")
+        self.assertFalse(result["approved"])
+        self.assertEqual(
+            self.simulator.BALANCES["WALLET-1001"], initial_balance
+        )
+        self.assertEqual(
+            self.simulator.get_momo_session(session["session_id"])["status"],
+            "FAILED",
+        )
+
+    def test_live_transfer_books_balance_only_after_provider_confirms_success(self):
+        assessment = {
+            "risk_score": 0.1,
+            "risk_level": "LOW",
+            "decision": "APPROVE",
+            "isolation_forest_score": 0.1,
+            "rule_score": 0,
+            "reasons": [],
+        }
+        initial_balance = self.simulator.BALANCES["WALLET-1001"]
+        session = self.simulator.initiate_transaction(
+            customer_ref="WALLET-1001",
+            transaction_type="TRANSFER",
+            amount=25,
+            recipient="0242002002",
+            live_mtn=True,
+        )
+        mtn_client = unittest.mock.Mock()
+        mtn_client.transfer.return_value = {
+            "reference_id": "c0bd43df-8a8b-4817-9bed-85a85ee85eb9",
+            "status": "PENDING",
+        }
+        mtn_client.get_transfer_status.return_value = {
+            "reference_id": "c0bd43df-8a8b-4817-9bed-85a85ee85eb9",
+            "status": "SUCCESSFUL",
+            "financialTransactionId": "confirmed-transaction",
+        }
+        with patch.object(
+            fraud_detector, "assess_transaction", return_value=assessment
+        ), patch.object(
+            self.simulator,
+            "get_mtn_disbursement_client",
+            return_value=mtn_client,
+        ):
+            pending = self.simulator.verify_transaction(session["session_id"], "2233")
+            self.assertEqual(pending["status"], "PENDING")
+            self.assertEqual(
+                self.simulator.BALANCES["WALLET-1001"], initial_balance
+            )
+            result = self.simulator.check_mtn_transfer_status(session["session_id"])
+
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertEqual(
+            self.simulator.BALANCES["WALLET-1001"], initial_balance - 25
+        )
+        self.assertEqual(
+            self.simulator.get_momo_session(session["session_id"])["status"],
+            "COMPLETED",
+        )
 
 
 class FastApiAdminAuthenticationTests(unittest.TestCase):

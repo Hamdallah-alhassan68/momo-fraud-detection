@@ -205,6 +205,14 @@ def authenticate_user(username: str, password: str) -> tuple[dict | None, str | 
 
 def seed_default_admin_users() -> list[str]:
     """Ensure default role-based demo user accounts exist if the table is empty."""
+    if os.getenv("MOMO_ENABLE_DEMO_ADMIN_USERS", "true").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return []
+
     count = database.count_admin_users()
     if count > 0:
         return []

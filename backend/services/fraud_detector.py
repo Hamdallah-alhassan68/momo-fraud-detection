@@ -262,7 +262,7 @@ class FraudDetector:
         # New recipient
         # --------------------------------------------------
 
-        if features["recipient_novel"]:
+        if features["recipient_novel"] == 1:
 
             score += 0.10
 
@@ -336,6 +336,12 @@ class FraudDetector:
 
             reasons.append(
                 "IP/network mismatch"
+            )
+
+        if bool(transaction.get("location_mismatch", False)):
+            score += 0.10
+            reasons.append(
+                "Transaction location differs from the customer's usual location"
             )
 
         # --------------------------------------------------
@@ -484,20 +490,25 @@ class FraudDetector:
             )
         )
 
-        step_up_signal = any(
-            bool(transaction.get(signal, False))
+        active_step_up_signals = [
+            signal
             for signal in (
                 "device_change",
                 "ip_network_mismatch",
+                "location_mismatch",
                 "recent_sim_swap",
                 "velocity_spike",
                 "frequency_spike",
                 "amount_deviation",
                 "unusual_hour",
             )
-        )
-        if step_up_signal:
-            hybrid_score = max(hybrid_score, self.low_threshold)
+            if bool(transaction.get(signal, False))
+        ]
+        if features["recipient_novel"] == 1:
+            active_step_up_signals.append("recipient_novel")
+        if active_step_up_signals:
+            step_up_floor = self.low_threshold + 0.03 * (len(active_step_up_signals) - 1)
+            hybrid_score = max(hybrid_score, step_up_floor)
 
         # --------------------------------------------------
         # Risk decision

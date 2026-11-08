@@ -1,0 +1,358 @@
+.mtn-sandbox-page {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 34px clamp(18px, 3vw, 48px) 48px;
+}
+
+.mtn-sandbox-header .eyebrow {
+  margin-bottom: 6px;
+  color: #00678f;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.mtn-sandbox-header h1 {
+  margin: 0 0 8px;
+  color: #0b354e;
+  font-family: var(--heading);
+  font-size: clamp(1.8rem, 3vw, 2.2rem);
+  font-weight: 680;
+  letter-spacing: -0.055em;
+}
+
+.mtn-sandbox-header p:last-child {
+  max-width: 760px;
+  color: #5b6472;
+  line-height: 1.55;
+}
+
+.mtn-sandbox-card {
+  box-sizing: border-box;
+  width: min(100%, 680px);
+  margin: 24px auto 0;
+  padding: clamp(20px, 4vw, 32px);
+  border: 1px solid #dce5ec;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08);
+}
+
+.mtn-sandbox-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.mtn-configuration-status {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 20px;
+  padding: 13px 15px;
+  border: 1px solid #f0caca;
+  border-radius: 12px;
+  background: #fff5f5;
+  color: #752c2c;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.mtn-configuration-status.is-configured {
+  border-color: #b7dfd2;
+  background: #effaf6;
+  color: #155e4b;
+}
+
+.mtn-configuration-refresh {
+  justify-self: start;
+  padding: 6px 10px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.mtn-configuration-refresh:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.mtn-sandbox-kicker {
+  margin: 0 0 4px;
+  color: #087c67;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.mtn-sandbox-card h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 1.25rem;
+}
+
+.mtn-sandbox-currency {
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: #e9f5f2;
+  color: #087c67;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.mtn-sandbox-notice {
+  margin-bottom: 22px;
+  padding: 14px 16px;
+  border: 1px solid #f1dfaa;
+  border-radius: 12px;
+  background: #fff9e8;
+  color: #604d1c;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.mtn-sandbox-model-warning {
+  margin-bottom: 22px;
+  padding: 14px 16px;
+  border: 1px solid #f0caca;
+  border-radius: 12px;
+  background: #fff5f5;
+  color: #752c2c;
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.mtn-sandbox-form {
+  display: grid;
+  gap: 18px;
+}
+
+.mtn-step-title {
+  margin: 0;
+  color: #0f172a;
+  font-size: 1rem;
+}
+
+.mtn-no-payment-yet {
+  margin: 0;
+  padding: 11px 13px;
+  border-left: 3px solid #087c67;
+  background: #effaf6;
+  color: #155e4b;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.mtn-continue-reason {
+  margin: 0;
+  padding: 11px 13px;
+  border: 1px solid #f0caca;
+  border-radius: 9px;
+  background: #fff5f5;
+  color: #752c2c;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.mtn-production-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e8b3ab;
+  border-radius: 10px;
+  background: #fff5f3;
+  color: #752c2c;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.mtn-production-confirmation input {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: #b42318;
+}
+
+.mtn-sandbox-form label {
+  display: grid;
+  gap: 7px;
+  color: #334155;
+  font-size: 0.94rem;
+  font-weight: 650;
+}
+
+.mtn-sandbox-form input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1.5px solid #d7dee8;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #0f172a;
+  font: inherit;
+}
+
+.mtn-sandbox-form input:focus {
+  outline: none;
+  border-color: #087c67;
+  box-shadow: 0 0 0 3px rgba(8, 124, 103, 0.14);
+}
+
+.mtn-sandbox-form small {
+  color: #64748b;
+  font-size: 0.8rem;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.mtn-sandbox-form button,
+.mtn-sandbox-actions button {
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 10px;
+  background: #087c67;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.mtn-sandbox-form button:disabled,
+.mtn-sandbox-actions button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.mtn-sandbox-error {
+  margin: 0;
+  color: #b42318;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.mtn-payment-result {
+  display: grid;
+  gap: 14px;
+}
+
+.mtn-payment-status,
+.mtn-payment-reference {
+  display: grid;
+  gap: 4px;
+}
+
+.mtn-payment-status span,
+.mtn-payment-reference span {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mtn-payment-status strong {
+  font-size: 1.15rem;
+}
+
+.mtn-payment-status .status-successful {
+  color: #087c67;
+}
+
+.mtn-payment-status .status-failed {
+  color: #b42318;
+}
+
+.mtn-payment-status .status-pending {
+  color: #a16207;
+}
+
+.mtn-payment-reference code {
+  overflow-wrap: anywhere;
+  color: #334155;
+  font-size: 0.9rem;
+}
+
+.mtn-payment-reason {
+  margin: 0;
+  color: #475569;
+}
+
+.mtn-risk-result {
+  padding: 14px 16px;
+  border: 1px solid #dce5ec;
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #334155;
+}
+
+.mtn-risk-result h3 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+}
+
+.mtn-risk-result p {
+  margin: 8px 0 0;
+  font-size: 0.88rem;
+}
+
+.mtn-risk-result ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  font-size: 0.85rem;
+}
+
+.mtn-risk-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 0.9rem;
+}
+
+.risk-low {
+  color: #087c67;
+}
+
+.risk-medium {
+  color: #a16207;
+}
+
+.risk-high,
+.status-blocked_by_fraud_model {
+  color: #b42318;
+}
+
+.mtn-sandbox-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.mtn-sandbox-actions .mtn-secondary-button {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+}
+
+.mtn-sandbox-footnote {
+  width: min(100%, 680px);
+  margin: 16px auto 0;
+  color: #64748b;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 520px) {
+  .mtn-sandbox-actions {
+    display: grid;
+  }
+}

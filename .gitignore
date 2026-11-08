@@ -1,3 +1,8 @@
 ieee-fraud-detection/
 *.csv
 *.zip
+__pycache__/
+*.py[cod]
+backend/fraud.db*
+backend/data/outbox/
+backend/.auth_secret

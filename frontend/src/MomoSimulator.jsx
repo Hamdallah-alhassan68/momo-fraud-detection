@@ -20,33 +20,8 @@ const SCENARIO_OPTIONS = [
   },
   {
     value: "DEVICE_CHANGE",
-    label: "New device signal",
-    hint: "Unrecognized hardware fingerprint or new phone",
-  },
-  {
-    value: "IP_MISMATCH",
-    label: "IP / network mismatch signal",
-    hint: "IP address outside customer's usual /24 subnet",
-  },
-  {
-    value: "VELOCITY_SPIKE",
-    label: "Velocity spike signal",
-    hint: "Burst of 3+ transactions within 3 minutes",
-  },
-  {
-    value: "FREQUENCY_SPIKE",
-    label: "Unusual daily frequency",
-    hint: "Daily transaction volume exceeds 2× historical rate",
-  },
-  {
-    value: "AMOUNT_DEVIATION",
-    label: "Amount deviates from usual pattern",
-    hint: "Transaction amount is significantly above the customer's usual amount",
-  },
-  {
-    value: "UNUSUAL_HOUR",
-    label: "Unusual transaction time",
-    hint: "Transaction initiated outside normal operating hours",
+    label: "Simulated new-device signal",
+    hint: "Inject an unrecognized device; no device fingerprinting service is queried.",
   },
 ];
 
@@ -84,7 +59,6 @@ export default function MomoSimulator() {
   const [customRecipientMode, setCustomRecipientMode] = useState(false);
   const [amount, setAmount] = useState("");
   const [deviceId, setDeviceId] = useState("");
-  const [ipAddress, setIpAddress] = useState("");
   const [scenarios, setScenarios] = useState([]);
 
   const [session, setSession] = useState(null);
@@ -105,7 +79,6 @@ export default function MomoSimulator() {
           const first = data.customers[0];
           setCustomerRef(first.ref);
           setDeviceId(first.devices[0]);
-          setIpAddress(first.base_ip);
           if (first.recipients?.length) {
             setRecipient(first.recipients[0].ref);
           }
@@ -125,7 +98,6 @@ export default function MomoSimulator() {
     setShowInsights(false);
     if (customer) {
       setDeviceId(customer.devices[0]);
-      setIpAddress(customer.base_ip);
     }
   }
 
@@ -134,7 +106,6 @@ export default function MomoSimulator() {
     const match = customers.find((c) => c.ref === nextRef);
     if (match) {
       setDeviceId(match.devices[0]);
-      setIpAddress(match.base_ip);
     } else if (nextRef.trim() && !deviceId) {
       setDeviceId(CUSTOM_DEVICE_DEFAULT);
     }
@@ -146,7 +117,6 @@ export default function MomoSimulator() {
       setCustomWalletMode(true);
       setCustomerRef("0241234567");
       setDeviceId(CUSTOM_DEVICE_DEFAULT);
-      setIpAddress("192.168.1.50");
       setCustomRecipientMode(true);
       setRecipient("0249876543");
     } else {
@@ -190,7 +160,6 @@ export default function MomoSimulator() {
       amount: Number(amount),
       recipient,
       device_id: deviceId,
-      ip_address: ipAddress,
       scenarios,
     };
 
@@ -495,28 +464,9 @@ export default function MomoSimulator() {
                   )}
                 </label>
 
-                <label>
-                  Network / IP address
-                  <input
-                    value={ipAddress}
-                    onChange={(e) => setIpAddress(e.target.value)}
-                    type="text"
-                    required
-                    autoComplete="off"
-                    spellCheck="false"
-                    aria-describedby="ip-guidance"
-                    placeholder="e.g. 192.168.1.22"
-                  />
-                  <small className="field-guidance" id="ip-guidance">
-                    Enter a valid IPv4 or IPv6 address. Use the wallet's usual
-                    network to simulate normal activity, or another address
-                    to test an IP mismatch.
-                  </small>
-                </label>
-
                 <fieldset className="scenario-fieldset">
                   <div className="scenario-legend-row">
-                    <legend>Synthetic risk scenarios</legend>
+                    <legend>Synthetic-only signal overrides</legend>
                     <span
                       className={`scenario-badge ${
                         scenarios.length === 0
@@ -528,7 +478,7 @@ export default function MomoSimulator() {
                     >
                       <span className="badge-dot" />
                       {scenarios.length === 0
-                        ? "Normal activity"
+                        ? "Automatic assessment"
                         : scenarios.length === 1
                           ? "1 risk signal active"
                           : `Compound risk (${scenarios.length} signals active)`}
@@ -536,13 +486,6 @@ export default function MomoSimulator() {
                   </div>
 
                   <div className="scenario-quick-actions">
-                    <button
-                      type="button"
-                      className={`scenario-pill ${scenarios.length === 0 ? "active" : ""}`}
-                      onClick={() => setScenarios([])}
-                    >
-                      Normal (clean)
-                    </button>
                     <button
                       type="button"
                       className={`scenario-pill ${
@@ -562,7 +505,7 @@ export default function MomoSimulator() {
                         setScenarios(SCENARIO_OPTIONS.map((o) => o.value))
                       }
                     >
-                      Select all risks
+                      Select all demos
                     </button>
                     {scenarios.length > 0 && (
                       <button
@@ -570,34 +513,12 @@ export default function MomoSimulator() {
                         className="scenario-pill-action"
                         onClick={() => setScenarios([])}
                       >
-                        Reset to normal
+                        Clear overrides
                       </button>
                     )}
                   </div>
 
                   <div className="scenario-cards-list">
-                    <label
-                      className={`scenario-card ${
-                        scenarios.length === 0 ? "selected-normal" : ""
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={scenarios.length === 0}
-                        onChange={(event) => {
-                          if (event.target.checked) setScenarios([]);
-                        }}
-                      />
-                      <div className="scenario-card-content">
-                        <div className="scenario-card-header">
-                          <strong>Normal baseline activity</strong>
-                        </div>
-                        <p className="scenario-card-hint">
-                          Clean transaction with no synthetic risk signals injected.
-                        </p>
-                      </div>
-                    </label>
-
                     {SCENARIO_OPTIONS.map((option) => {
                       const isChecked = scenarios.includes(option.value);
                       return (
@@ -622,9 +543,11 @@ export default function MomoSimulator() {
                   </div>
 
                   <small className="field-guidance">
-                    These are manually injected synthetic signals, not live
-                    telecom or network checks. Select one to demonstrate its
-                    effect, or combine signals to model compound risk.
+                    Only SIM-swap and device-change are manual synthetic
+                    overrides. Time, daily frequency, velocity, amount
+                    deviation, and IP/network mismatch are calculated from
+                    simulator history and the entered IP; they cannot be
+                    toggled here. Nothing on this page queries MTN telemetry.
                   </small>
                 </fieldset>
 
@@ -768,17 +691,15 @@ export default function MomoSimulator() {
                     <strong>GHS {Number(session.amount).toLocaleString()}</strong>
                   </div>
                   <div>
-                    <span>Network</span>
-                    <strong>{ipAddress}</strong>
-                  </div>
-                  <div>
                     <span>Device</span>
                     <strong>{deviceId}</strong>
                   </div>
                   <div>
                     <span>Scenarios</span>
                     <strong>
-                      {scenarios.length ? scenarios.join(", ") : "Normal activity"}
+                      {scenarios.length
+                        ? scenarios.join(", ")
+                        : "No manual overrides"}
                     </strong>
                   </div>
                 </div>
@@ -906,9 +827,28 @@ export default function MomoSimulator() {
                   </div>
                 </div>
 
-                {!result.approved && result.reasons?.length > 0 && (
+                <section className="simulated-signal-summary" aria-live="polite">
+                  <h3>Simulated security signals</h3>
+                  <ul>
+                    <li className={result.signals?.recent_sim_swap ? "is-detected" : ""}>
+                      <span>Recent SIM swap</span>
+                      <strong>
+                        {result.signals?.recent_sim_swap ? "Detected" : "Not detected"}
+                      </strong>
+                    </li>
+                    <li className={result.signals?.device_change ? "is-detected" : ""}>
+                      <span>New or changed device</span>
+                      <strong>
+                        {result.signals?.device_change ? "Detected" : "Not detected"}
+                      </strong>
+                    </li>
+                  </ul>
+                  <p>These are demo overrides, not live carrier or device checks.</p>
+                </section>
+
+                {result.reasons?.length > 0 && (
                   <div className="blocked-reasons">
-                    <h3>Why it was flagged</h3>
+                    <h3>Risk reasons</h3>
                     <ul>
                       {result.reasons.map((reason) => (
                         <li key={reason}>{reason}</li>
@@ -938,10 +878,13 @@ export default function MomoSimulator() {
                         {result.signals?.device_change ? "detected" : "not detected"}
                         <small>{result.signals?.device_id}</small>
                       </li>
+                      <li className={result.signals?.recent_sim_swap ? "flag" : "ok"}>
+                        Simulated SIM swap:{" "}
+                        {result.signals?.recent_sim_swap ? "detected" : "not detected"}
+                      </li>
                       <li className={result.signals?.ip_network_mismatch ? "flag" : "ok"}>
                         IP / network mismatch:{" "}
                         {result.signals?.ip_network_mismatch ? "detected" : "not detected"}
-                        <small>Expected network: {result.signals?.expected_network}</small>
                       </li>
                       <li className={result.signals?.recipient_novel ? "flag" : "ok"}>
                         New recipient: {result.signals?.recipient_novel ? "yes" : "no"}

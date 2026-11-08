@@ -29,12 +29,24 @@ from database.database import (
     get_customer_recipient_history,
     count_velocity_sessions,
     get_customer_baseline,
+    get_customer_security_history,
+    get_sandbox_customer_profile,
+    trust_customer_security_signal,
     get_account_status,
+    update_mtn_transaction_status,
     set_account_frozen,
     set_account_unfrozen,
 )
 from services import events
 from services.fraud_detector import fraud_detector
+from services.email_service import send_step_up_email, get_smtp_config
+from services.mtn_disbursement import (
+    get_mtn_disbursement_client,
+    MtnDisbursementError,
+    normalize_disbursement_amount,
+)
+from services.mtn_collection import MtnCollectionClient
+from services.auth import verify_password
 from services.input_validation import (
     is_valid_simulated_recipient,
     is_valid_wallet_reference,
@@ -52,6 +64,8 @@ CUSTOMERS = [
         "ref": "WALLET-1001",
         "name": "Kwame Mensah",
         "phone": "0241001001",
+        "id_type": "GHANA_CARD",
+        "id_number": "GHA-712345678-1",
         "email": "kwame.mensah@example.test",
         "email_verified": True,
         "balance": 5000.0,
@@ -63,6 +77,8 @@ CUSTOMERS = [
         "ref": "WALLET-1002",
         "name": "Ama Serwaa",
         "phone": "0242002002",
+        "id_type": "GHANA_CARD",
+        "id_number": "GHA-823456789-2",
         "email": "ama.serwaa@example.test",
         "email_verified": True,
         "balance": 11600.0,
@@ -74,6 +90,8 @@ CUSTOMERS = [
         "ref": "WALLET-1003",
         "name": "Yaw Boateng",
         "phone": "0243003003",
+        "id_type": "PASSPORT",
+        "id_number": "G1089234",
         "email": "yaw.boateng@example.test",
         "email_verified": True,
         "balance": 2400.0,
@@ -117,35 +135,19 @@ SIMULATION_SCENARIOS = {
     "NORMAL",
     "RECENT_SIM_SWAP",
     "DEVICE_CHANGE",
-    "IP_MISMATCH",
-    "VELOCITY_SPIKE",
-    "FREQUENCY_SPIKE",
-    "AMOUNT_DEVIATION",
-    "UNUSUAL_HOUR",
 }
 
-# A single synthetic event may combine several risk signals, so the simulator
-# accepts more than one scenario per transaction. SCENARIO_ORDER also gives a
-# stable storage/display order.
+# Only signals without behavioral history are manually injectable. Behavioral
+# signals are calculated from the simulator's transaction history and context.
 SCENARIO_ORDER = [
     "RECENT_SIM_SWAP",
     "DEVICE_CHANGE",
-    "IP_MISMATCH",
-    "VELOCITY_SPIKE",
-    "FREQUENCY_SPIKE",
-    "AMOUNT_DEVIATION",
-    "UNUSUAL_HOUR",
 ]
 
 SCENARIO_LABELS = {
     "NORMAL": "Normal activity",
     "RECENT_SIM_SWAP": "Recent SIM swap signal",
     "DEVICE_CHANGE": "New device signal",
-    "IP_MISMATCH": "IP/network mismatch signal",
-    "VELOCITY_SPIKE": "Velocity spike signal",
-    "FREQUENCY_SPIKE": "Unusual daily frequency",
-    "AMOUNT_DEVIATION": "Amount deviates from usual pattern",
-    "UNUSUAL_HOUR": "Unusual transaction time",
 }
 
 
@@ -170,8 +172,8 @@ def _normalize_scenarios(scenario):
         if token not in SIMULATION_SCENARIOS:
             raise ValueError(
                 "Unsupported simulation scenario. Choose NORMAL, RECENT_SIM_SWAP, "
-                "DEVICE_CHANGE, IP_MISMATCH, VELOCITY_SPIKE, FREQUENCY_SPIKE, "
-                "AMOUNT_DEVIATION, or UNUSUAL_HOUR."
+                "or DEVICE_CHANGE. Behavioral risk signals are calculated from "
+                "transaction history and network context."
             )
         if token not in cleaned:
             cleaned.append(token)
@@ -242,6 +244,55 @@ def _ensure_customer(customer_ref):
     if customer is not None:
         return customer
 
+    sandbox_profile = get_sandbox_customer_profile(ref)
+    if sandbox_profile:
+        customer = {
+            "ref": sandbox_profile["phone_number"],
+            "name": sandbox_profile["full_name"],
+            "phone": sandbox_profile["phone_number"],
+            "id_type": sandbox_profile["id_type"],
+            "id_number": "",
+            "email": sandbox_profile["email"],
+            "email_verified": bool(sandbox_profile["email_verified"]),
+            "balance": float(sandbox_profile["balance"]),
+            "pin_hash": sandbox_profile["pin_hash"],
+            "base_ip": "127.0.0.1",
+            "devices": [],
+            "sandbox_profile": True,
+        }
+        CUSTOMERS.append(customer)
+        BALANCES[customer["ref"]] = customer["balance"]
+        return customer
+
+    try:
+        from services.kyc_service import find_subscriber
+        kyc_sub = find_subscriber(ref)
+        if kyc_sub:
+            assigned_ref = (
+                ref
+                if (ref.startswith("0") or ref.startswith("+") or not ref.upper().startswith("WALLET-"))
+                else kyc_sub["customer_ref"]
+            )
+            customer = {
+                "ref": assigned_ref,
+                "name": kyc_sub["full_name"],
+                "phone": kyc_sub["phone_number"],
+                "id_type": kyc_sub.get("id_type", "GHANA_CARD"),
+                "id_number": kyc_sub.get("id_number", ""),
+                "email": kyc_sub.get("email", CUSTOM_WALLET_EMAIL),
+                "email_verified": bool(kyc_sub.get("email_verified", False)),
+                "balance": kyc_sub.get("balance", CUSTOM_WALLET_STARTING_BALANCE),
+                "pin": kyc_sub.get("pin", CUSTOM_WALLET_PIN),
+                "base_ip": kyc_sub.get("base_ip", CUSTOM_WALLET_BASE_IP),
+                "devices": kyc_sub.get("devices") or [CUSTOM_WALLET_DEVICE],
+                "tier": kyc_sub.get("tier", "TIER_3_FULL_KYC"),
+            }
+            CUSTOMERS.append(customer)
+            BALANCES[customer["ref"]] = customer["balance"]
+            return customer
+    except Exception:
+        pass
+
     if not is_valid_wallet_reference(ref):
         raise ValueError(
             "Enter a demo wallet (WALLET-1001, WALLET-1002, WALLET-1003), "
@@ -277,6 +328,28 @@ def _mask_phone(phone):
     return phone
 
 
+
+def normalize_ghana_msisdn(msisdn):
+    digits = re.sub(r"\D", "", str(msisdn or ""))
+    if len(digits) == 10 and digits.startswith("0"):
+        return "233" + digits[1:]
+    return digits
+
+
+def update_customer_email(customer_ref, email):
+    customer = _ensure_customer(customer_ref)
+    clean_email = str(email or "").strip().lower()
+    if "@" not in clean_email or "." not in clean_email.partition("@")[2]:
+        raise ValueError("Enter a valid email address.")
+    customer["email"] = clean_email
+    customer["email_verified"] = True
+    return {
+        "customer_ref": customer["ref"],
+        "email": clean_email,
+        "email_verified": True,
+        "masked_email": _mask_email(clean_email),
+    }
+
 def _mask_email(email):
     local_part, separator, domain = email.partition("@")
     if not separator or not local_part or not domain:
@@ -295,9 +368,13 @@ def get_customers():
     for customer in CUSTOMERS:
         copy = dict(customer)
         copy.pop("pin", None)
-        copy.pop("email", None)
-        copy.pop("email_verified", None)
+        copy["email"] = customer.get("email")
+        copy["masked_email"] = _mask_email(customer.get("email", ""))
+        copy["email_verified"] = bool(customer.get("email_verified", True))
         copy["balance"] = BALANCES.get(customer["ref"], customer["balance"])
+        copy["id_type"] = customer.get("id_type", "GHANA_CARD")
+        id_num = customer.get("id_number", "")
+        copy["id_number_masked"] = (id_num[:4] + "***" + id_num[-2:]) if len(id_num) > 6 else id_num
 
         freeze_deadline = FROZEN_UNTIL.get(customer["ref"])
         still_frozen = bool(freeze_deadline and freeze_deadline > now_utc)
@@ -332,6 +409,9 @@ def initiate_transaction(
     device_id=None,
     ip_address=None,
     scenario: str = "NORMAL",
+    live_mtn: bool = False,
+    location_latitude=None,
+    location_longitude=None,
 ):
     """Start a MoMo transaction; returns a session awaiting PIN/OTP."""
     customer = _ensure_customer(customer_ref)
@@ -378,6 +458,18 @@ def initiate_transaction(
     if re.fullmatch(r"(?:02|05|03)\d{8}|\+233(?:2|5|3)\d{8}", cleaned_recipient_phone):
         recipient = cleaned_recipient_phone
 
+    if live_mtn:
+        if transaction_type == "TRANSFER":
+            norm_phone = normalize_ghana_msisdn(recipient)
+            try:
+                recipient = MtnCollectionClient._normalize_msisdn(norm_phone)
+            except ValueError as error:
+                raise ValueError("Enter a valid recipient mobile number (e.g. 233241234567).") from error
+        try:
+            normalize_disbursement_amount(amount)
+        except ValueError as error:
+            raise ValueError(str(error)) from error
+
     if not is_valid_simulated_recipient(recipient, BALANCES):
         raise ValueError(
             "Enter a known demo recipient, a fictional wallet ID such as "
@@ -414,6 +506,7 @@ def initiate_transaction(
     ip_address = validate_ip_address(
         str(ip_address or customer["base_ip"]).strip()
     )
+    location = _normalize_location(location_latitude, location_longitude)
 
     create_momo_session(
         session_id,
@@ -426,6 +519,9 @@ def initiate_transaction(
         device_id,
         ip_address,
         scenario_storage,
+        live_mtn=1 if live_mtn else 0,
+        location_latitude=location[0] if location else None,
+        location_longitude=location[1] if location else None,
     )
 
     message = (
@@ -438,7 +534,11 @@ def initiate_transaction(
         "session_id": session_id,
         "verification_method": verification,
         "message": message,
-        "demo_hint": otp_code or customer["pin"],
+        **(
+            {"demo_hint": otp_code or customer["pin"]}
+            if not live_mtn
+            else {}
+        ),
         "customer_name": customer["name"],
         "amount": amount,
         "recipient": recipient,
@@ -448,7 +548,26 @@ def initiate_transaction(
         "ip_address": ip_address,
         "scenario": scenario_storage,
         "scenarios": scenarios,
+        "live_mtn": bool(live_mtn),
+        "location": (
+            {"latitude": location[0], "longitude": location[1]}
+            if location
+            else None
+        ),
     }
+
+
+def _normalize_location(latitude, longitude):
+    if latitude is None and longitude is None:
+        return None
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Location coordinates must be valid numbers.") from error
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        raise ValueError("Location coordinates are outside valid ranges.")
+    return round(latitude, 2), round(longitude, 2)
 
 
 def verify_transaction(session_id, code, step_up=False):
@@ -466,6 +585,7 @@ def verify_transaction(session_id, code, step_up=False):
         )
 
     customer = _ensure_customer(session["customer_ref"])
+    live_mtn = bool(session.get("live_mtn", 0))
 
     if get_account_status(customer["ref"]).get("frozen"):
         raise ValueError(
@@ -474,7 +594,10 @@ def verify_transaction(session_id, code, step_up=False):
         )
 
     if step_up:
-        expected = session.get("otp_code")
+        expected_otp = str(session.get("otp_code") or "").strip()
+        clean_code = str(code).replace("-", "").strip().upper()
+        if clean_code != expected_otp:
+            raise ValueError("Incorrect email verification code. Please try again.")
     else:
         method = session["verification_method"]
         expected = (
@@ -482,8 +605,13 @@ def verify_transaction(session_id, code, step_up=False):
             if method == "PIN"
             else session.get("otp_code")
         )
-    if str(code).strip() != str(expected):
-        raise ValueError("Incorrect PIN/OTP. Please try again.")
+        code_matches = (
+            verify_password(str(code).strip(), customer["pin_hash"])
+            if customer.get("pin_hash")
+            else str(code).strip() == str(expected)
+        )
+        if not code_matches:
+            raise ValueError("Incorrect PIN/OTP. Please try again.")
     if step_up and session["status"] != "STEP_UP":
         raise ValueError(
             "This transaction does not require step-up verification."
@@ -525,25 +653,43 @@ def verify_transaction(session_id, code, step_up=False):
     ip_address = session.get("ip_address") or customer["base_ip"]
 
     scenarios = _parse_scenarios(session.get("scenario") or "NORMAL")
+    security_history = get_customer_security_history(customer["ref"])
+    known_devices = set(customer["devices"]) | security_history["device_ids"]
     device_change = bool(
-        device_id not in customer["devices"] or "DEVICE_CHANGE" in scenarios
+        device_id not in known_devices or "DEVICE_CHANGE" in scenarios
     )
-    expected_network = ipaddress.ip_network(
-        f"{customer['base_ip']}/24",
-        strict=False,
-    )
+    known_ips = security_history["ip_addresses"] or {customer["base_ip"]}
     provided_address = ipaddress.ip_address(ip_address)
-    ip_network_mismatch = bool(
-        provided_address.version != expected_network.version
-        or provided_address not in expected_network
-        or "IP_MISMATCH" in scenarios
+    expected_networks = [
+        ipaddress.ip_network(f"{known_ip}/24", strict=False)
+        for known_ip in known_ips
+    ]
+    ip_network_mismatch = not any(
+        provided_address.version == network.version
+        and provided_address in network
+        for network in expected_networks
     )
-    expected_network = str(expected_network)
+    expected_network = ", ".join(sorted(str(network) for network in expected_networks))
+    location = (
+        (session.get("location_latitude"), session.get("location_longitude"))
+        if session.get("location_latitude") is not None
+        and session.get("location_longitude") is not None
+        else None
+    )
+    location_mismatch = bool(
+        location
+        and security_history["locations"]
+        and all(
+            abs(location[0] - previous[0]) > 0.5
+            or abs(location[1] - previous[1]) > 0.5
+            for previous in security_history["locations"]
+        )
+    )
 
     velocity_count = count_velocity_sessions(
         customer["ref"], window_minutes=3
     )
-    velocity_spike = velocity_count >= 3 or "VELOCITY_SPIKE" in scenarios
+    velocity_spike = velocity_count >= 3
     baseline = get_customer_baseline(customer["ref"])
     baseline_count = int(baseline.get("count") or 0)
     average_daily_frequency = float(
@@ -555,7 +701,7 @@ def verify_transaction(session_id, code, step_up=False):
     frequency_spike = bool(
         baseline_count >= 5
         and today_count >= max(5, average_daily_frequency * 2)
-    ) or "FREQUENCY_SPIKE" in scenarios
+    )
 
     # ------------------------------------------------
     # Customer behavioural baseline (historical pattern)
@@ -563,7 +709,7 @@ def verify_transaction(session_id, code, step_up=False):
     baseline_avg_amount = float(baseline.get("avg_amount") or 0.0)
     amount_deviation = bool(
         baseline_count >= 2 and amount > baseline_avg_amount * 1.5
-    ) or "AMOUNT_DEVIATION" in scenarios
+    )
 
     hour_local = datetime.now(GHANA_TIMEZONE).hour
     usual_hours = baseline.get("usual_hours", [])
@@ -571,7 +717,7 @@ def verify_transaction(session_id, code, step_up=False):
         baseline_count >= 5
         and usual_hours
         and hour_local not in usual_hours
-    ) or "UNUSUAL_HOUR" in scenarios
+    )
 
     recent_sim_swap = "RECENT_SIM_SWAP" in scenarios
 
@@ -587,6 +733,7 @@ def verify_transaction(session_id, code, step_up=False):
         "recipient_new": recipient_novel_flag,
         "device_change": device_change,
         "ip_network_mismatch": ip_network_mismatch,
+        "location_mismatch": location_mismatch,
         "recent_sim_swap": recent_sim_swap,
         "scenario": _join_scenarios(scenarios),
         "velocity_spike": velocity_spike,
@@ -597,6 +744,8 @@ def verify_transaction(session_id, code, step_up=False):
         "device_id": device_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    if location:
+        transaction["location_latitude"], transaction["location_longitude"] = location
 
     assessment = fraud_detector.assess_transaction(
         transaction, dest_previous_count
@@ -609,6 +758,7 @@ def verify_transaction(session_id, code, step_up=False):
     signals = {
         "device_change": device_change,
         "ip_network_mismatch": ip_network_mismatch,
+        "location_mismatch": location_mismatch,
         "recipient_novel": recipient_novel_flag,
         "velocity_spike": velocity_spike,
         "frequency_spike": frequency_spike,
@@ -621,6 +771,7 @@ def verify_transaction(session_id, code, step_up=False):
         "scenarios": scenarios,
     }
 
+    transaction["live_mtn"] = live_mtn
     outcome = _resolve_outcome(
         session_id, risk_level, assessment, reference, transaction,
         signals, amount, dest_ref, origin_ref, origin_new, dest_new,
@@ -630,6 +781,8 @@ def verify_transaction(session_id, code, step_up=False):
             if customer.get("email_verified") is True
             else None
         ),
+        live_mtn=live_mtn,
+        customer=customer,
     )
 
     if outcome.get("status") == "BLOCKED":
@@ -647,14 +800,14 @@ def verify_transaction(session_id, code, step_up=False):
 def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
                       signals, amount, dest_ref, origin_ref, origin_new, dest_new,
                       session_status, session_otp, ip_address, device_id,
-                      step_up_email=None):
+                      step_up_email=None, live_mtn=False, customer=None):
     """Apply the fraud engine decision to the transaction session."""
 
     if risk_level == "LOW" or session_status == "STEP_UP":
         return _apply_outcome(
             session_id, risk_level, assessment, reference, transaction,
             signals, amount, dest_ref, origin_ref, origin_new, dest_new,
-            ip_address, device_id
+            ip_address, device_id, live_mtn=live_mtn, customer=customer
         )
 
     if risk_level == "MEDIUM":
@@ -689,6 +842,44 @@ def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
             }
 
         step_up_otp = f"{secrets.randbelow(1_000_000):06d}"
+        email_result = send_step_up_email(
+            recipient_email=step_up_email,
+            otp_code=step_up_otp,
+            transaction_details={
+                "amount": format(amount, ".2f"),
+                "currency": "EUR" if live_mtn else "GHS",
+                "recipient": dest_ref,
+                "customer_name": (customer or {}).get("name", "Valued Customer"),
+                "reasons": assessment["reasons"],
+            },
+        )
+        if live_mtn and not email_result["delivered"]:
+            _finalize(
+                "BLOCKED", "STEP_UP_EMAIL_UNAVAILABLE", transaction, assessment,
+                ip_address, device_id
+            )
+            update_momo_session_status(
+                session_id,
+                "BLOCKED",
+                risk_level=risk_level,
+                risk_score=assessment["risk_score"],
+                reason="Verified email delivery failed",
+            )
+            return {
+                "status": "BLOCKED",
+                "message": (
+                    "This transfer was blocked because the verification email "
+                    "could not be delivered. No money left your wallet."
+                ),
+                "transaction_reference": reference,
+                "risk_score": assessment["risk_score"],
+                "risk_level": risk_level,
+                "decision": "STEP-UP DELIVERY FAILED",
+                "reasons": assessment["reasons"],
+                "signals": signals,
+                "approved": False,
+                "live_mtn": True,
+            }
         update_momo_session_status(
             session_id, "STEP_UP",
             reason="Additional verification required",
@@ -698,18 +889,26 @@ def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
         return {
             "status": "STEP_UP_REQUIRED",
             "message": (
-                "Suspicious activity detected. Additional verification is "
-                "required before this transfer completes."
+                "Suspicious activity detected. An OTP security code has been dispatched "
+                f"to your email ({_mask_email(step_up_email)}). Enter it to complete your transfer."
             ),
             "session_id": session_id,
             "step_up": True,
             "verification_method": "EMAIL",
             "verification_destination": _mask_email(step_up_email),
-            "delivery_status": "SIMULATED_NOT_SENT",
-            "demo_hint": step_up_otp,
+            "delivery_status": email_result["delivery_status"] if live_mtn else "SIMULATED_NOT_SENT",
+            "smtp_configured": email_result["smtp_configured"],
+            **({"demo_hint": step_up_otp} if not live_mtn else {}),
             "reasons": assessment["reasons"],
             "risk_score": assessment["risk_score"],
             "signals": signals,
+            "live_mtn": live_mtn,
+            "id_type": (customer or {}).get("id_type", "GHANA_CARD"),
+            "id_masked": (
+                ((customer.get("id_number")[:4] + "***" + customer.get("id_number")[-2:])
+                 if (customer and len(customer.get("id_number", "")) > 6)
+                 else (customer or {}).get("id_number", ""))
+            ),
         }
 
     # HIGH risk: block the transaction immediately.
@@ -774,8 +973,105 @@ def _finalize(status, audit_action, transaction, assessment, ip_address, device_
 
 def _apply_outcome(session_id, risk_level, assessment, reference, transaction,
                     signals, amount, dest_ref, origin_ref, origin_new, dest_new,
-                    ip_address, device_id):
+                    ip_address, device_id, live_mtn=False, customer=None):
     """Bookkeeping after an APPROVED outcome (balance update + audit)."""
+
+    mtn_transfer = None
+    transfer_uncertain = False
+    if live_mtn:
+        try:
+            target_phone = dest_ref
+            matching_cust = next((c for c in CUSTOMERS if c["ref"] == dest_ref), None)
+            if matching_cust and matching_cust.get("phone"):
+                target_phone = matching_cust["phone"]
+            mtn_recipient = normalize_ghana_msisdn(target_phone)
+            if not mtn_recipient or len(mtn_recipient) < 9:
+                raise ValueError("The recipient does not have a valid MTN wallet number.")
+            mtn_client = get_mtn_disbursement_client()
+            mtn_transfer = mtn_client.transfer(
+                amount=format(amount, ".2f"),
+                recipient_msisdn=mtn_recipient,
+                external_id=reference,
+                payer_message=f"MoMo {transaction.get('transaction_type', 'TRANSFER')} from {(customer or {}).get('name', 'Customer')}",
+                payee_note="MoMo Sentinel Transfer",
+            )
+            transaction["mtn_reference_id"] = mtn_transfer.get("reference_id")
+            transaction["mtn_financial_id"] = mtn_transfer.get("financialTransactionId")
+        except MtnDisbursementError as err:
+            if not (err.status_code >= 500 and err.reference_id):
+                _finalize(
+                    "FAILED", "MTN_TRANSFER_FAILED", transaction, assessment,
+                    ip_address, device_id
+                )
+                update_momo_session_status(
+                    session_id, "FAILED",
+                    risk_level=risk_level,
+                    risk_score=assessment["risk_score"],
+                    reason="MTN did not accept the transfer request",
+                )
+                return {
+                    "status": "FAILED",
+                    "message": f"MTN did not accept the transfer. {err}",
+                    "transaction_reference": reference,
+                    "risk_score": assessment["risk_score"],
+                    "risk_level": risk_level,
+                    "decision": "MTN TRANSFER FAILED",
+                    "reasons": assessment["reasons"],
+                    "signals": signals,
+                    "approved": False,
+                    "live_mtn": True,
+                }
+            mtn_transfer = {
+                "reference_id": err.reference_id,
+                "status": "PENDING",
+                "amount": format(amount, ".2f"),
+                "currency": "EUR",
+                "recipient_msisdn": normalize_ghana_msisdn(target_phone),
+            }
+            transfer_uncertain = True
+
+    if live_mtn:
+        transaction["mtn_reference_id"] = mtn_transfer.get("reference_id")
+        _finalize(
+            "PENDING", "MTN_TRANSFER_ACCEPTED", transaction, assessment,
+            ip_address, device_id
+        )
+        update_momo_session_status(
+            session_id,
+            "PENDING_MTN",
+            risk_level=risk_level,
+            risk_score=assessment["risk_score"],
+            reason="Awaiting MTN transfer status",
+            mtn_reference_id=mtn_transfer["reference_id"],
+            transaction_reference=reference,
+        )
+        return {
+            "status": "PENDING",
+            "message": (
+                (
+                    "The MTN request outcome is uncertain. Check this transfer's "
+                    "status before trying again."
+                    if transfer_uncertain
+                    else
+                    "MTN accepted the transfer request. Its final status is pending; "
+                    "check the transfer status before trying again."
+                )
+            ),
+            "transaction_reference": reference,
+            "reference_id": mtn_transfer["reference_id"],
+            "amount": amount,
+            "recipient": dest_ref,
+            "risk_score": assessment["risk_score"],
+            "risk_level": risk_level,
+            "decision": assessment["decision"],
+            "reasons": assessment["reasons"],
+            "signals": signals,
+            "approved": False,
+            "step_up_completed": risk_level != "LOW",
+            "live_mtn": True,
+            "mtn_transfer": mtn_transfer,
+        }
+
     tx_id = _finalize(
         "COMPLETED", "TRANSACTION_APPROVED", transaction, assessment,
         ip_address, device_id
@@ -788,13 +1084,18 @@ def _apply_outcome(session_id, risk_level, assessment, reference, transaction,
 
     BALANCES[origin_ref] = origin_new
     BALANCES[dest_ref] = dest_new
+    trust_customer_security_signal(session_id)
 
-    return {
+    result = {
         "status": "APPROVED",
         "message": (
-            "Transaction completed successfully."
-            if risk_level == "LOW"
-            else "Transaction approved after step-up verification."
+            "Transaction completed and transfer sent to MTN."
+            if live_mtn
+            else (
+                "Transaction completed successfully."
+                if risk_level == "LOW"
+                else "Transaction approved after step-up verification."
+            )
         ),
         "transaction_reference": reference,
         "amount": amount,
@@ -810,7 +1111,56 @@ def _apply_outcome(session_id, risk_level, assessment, reference, transaction,
         "signals": signals,
         "approved": True,
         "step_up_completed": risk_level != "LOW",
+        "live_mtn": live_mtn,
     }
+    return result
+
+
+def check_mtn_transfer_status(session_id):
+    """Reconcile a sandbox transfer and apply balance changes only on success."""
+    session = get_momo_session(session_id)
+    if not session or not session.get("live_mtn"):
+        raise ValueError("MTN transfer session was not found.")
+    if session["status"] in ("COMPLETED", "FAILED"):
+        return {"status": session["status"], "reference_id": session.get("mtn_reference_id")}
+    if session["status"] != "PENDING_MTN" or not session.get("mtn_reference_id"):
+        raise ValueError("This transfer does not have a pending MTN status to check.")
+
+    result = get_mtn_disbursement_client().get_transfer_status(
+        session["mtn_reference_id"]
+    )
+    provider_status = result["status"].upper()
+    if provider_status == "SUCCESSFUL":
+        if not update_mtn_transaction_status(
+            session["mtn_reference_id"],
+            "COMPLETED",
+            result.get("financialTransactionId"),
+        ):
+            raise RuntimeError("The accepted MTN transfer record could not be reconciled.")
+        update_momo_session_status(
+            session_id,
+            "COMPLETED",
+            reason="MTN confirmed the transfer",
+        )
+        trust_customer_security_signal(session_id)
+        customer = _ensure_customer(session["customer_ref"])
+        amount = float(session["amount"])
+        recipient = session["recipient"]
+        BALANCES[customer["ref"]] = max(
+            0.0, BALANCES.get(customer["ref"], customer["balance"]) - amount
+        )
+        BALANCES[recipient] = BALANCES.get(recipient, 0.0) + amount
+        return {**result, "status": "COMPLETED"}
+    if provider_status in ("FAILED", "REJECTED"):
+        if not update_mtn_transaction_status(session["mtn_reference_id"], "FAILED"):
+            raise RuntimeError("The failed MTN transfer record could not be reconciled.")
+        update_momo_session_status(
+            session_id,
+            "FAILED",
+            reason="MTN reported that the transfer failed",
+        )
+        return {**result, "status": "FAILED"}
+    return {**result, "status": "PENDING"}
 
 
 # ==========================================================

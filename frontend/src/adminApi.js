@@ -59,6 +59,7 @@ export async function verifyAdminToken(token) {
   if (!response.ok) {
     throw new Error(payload.detail || "Admin authentication failed.");
   }
+  setAdminToken(token);
   if (payload.user) {
     setCurrentUser(payload.user);
   }

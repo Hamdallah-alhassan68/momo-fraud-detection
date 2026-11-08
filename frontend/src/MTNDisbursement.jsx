@@ -1,0 +1,1880 @@
+import { useCallback, useEffect, useState } from "react";
+import { adminFetch, API_URL } from "./adminApi.js";
+import "./MTNDisbursement.css";
+
+// Clean SVG Icons (replacing all emojis for enterprise-grade styling)
+function SendIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="22" y1="2" x2="11" y2="13" />
+      <polygon points="22 2 15 22 11 13 2 9 22 2" />
+    </svg>
+  );
+}
+
+function ShieldIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+  );
+}
+
+function CashoutIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="6" width="20" height="12" rx="2" />
+      <circle cx="12" cy="12" r="3" />
+      <line x1="6" y1="12" x2="6.01" y2="12" />
+      <line x1="18" y1="12" x2="18.01" y2="12" />
+    </svg>
+  );
+}
+
+function BankIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="3" y1="21" x2="21" y2="21" />
+      <line x1="3" y1="10" x2="21" y2="10" />
+      <polyline points="5 6 12 3 19 6" />
+      <line x1="4" y1="10" x2="4" y2="21" />
+      <line x1="20" y1="10" x2="20" y2="21" />
+      <line x1="8" y1="14" x2="8" y2="17" />
+      <line x1="12" y1="14" x2="12" y2="17" />
+      <line x1="16" y1="14" x2="16" y2="17" />
+    </svg>
+  );
+}
+
+function StatementIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="16" y1="13" x2="8" y2="13" />
+      <line x1="16" y1="17" x2="8" y2="17" />
+      <polyline points="10 9 9 9 8 9" />
+    </svg>
+  );
+}
+
+function AlertIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+  );
+}
+
+function LockIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function CrossIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+function QrIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7" />
+      <rect x="14" y="3" width="7" height="7" />
+      <rect x="14" y="14" width="7" height="7" />
+      <rect x="3" y="14" width="7" height="7" />
+    </svg>
+  );
+}
+
+const TRANSACTION_CHANNELS = [
+  { id: "TRANSFER", label: "Wallet to Wallet", sub: "Direct MoMo transfer" },
+  { id: "CASH_OUT", label: "Wallet to Bank", sub: "Bank account transfer" },
+  { id: "CASH_IN", label: "Bank to Wallet", sub: "Top-up from linked bank" },
+];
+
+function getBrowserDeviceId() {
+  try {
+    let deviceId = localStorage.getItem("momo-sandbox-device-id");
+    if (!deviceId) {
+      deviceId = crypto.randomUUID();
+      localStorage.setItem("momo-sandbox-device-id", deviceId);
+    }
+    return deviceId;
+  } catch {
+    return `TEMP-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+}
+
+export default function MTNDisbursement() {
+  // Navigation tabs: 'momo' | 'home' | 'buy' | 'pulse' | 'more'
+  const [activeTab, setActiveTab] = useState("momo");
+
+  // Balance privacy state
+  const [showBalance, setShowBalance] = useState(false);
+
+  // Active Modals: null | 'send' | 'approvals' | 'statements' | 'freeze'
+  const [activeModal, setActiveModal] = useState("send");
+
+  // Transfer steps: 'form' | 'auth' | 'evaluating' | 'stepup' | 'receipt'
+  const [step, setStep] = useState("form");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  // Sandbox customer identity is established once; transfer forms only ask for the recipient.
+  const [customerToken, setCustomerToken] = useState(
+    () => sessionStorage.getItem("momo-sandbox-customer-token") || "",
+  );
+  const [customerAccount, setCustomerAccount] = useState(null);
+  const [customerView, setCustomerView] = useState("signin");
+  const [loginNumber, setLoginNumber] = useState("");
+  const [loginPin, setLoginPin] = useState("");
+  const [registration, setRegistration] = useState({
+    phone_number: "",
+    full_name: "",
+    id_type: "PASSPORT",
+    id_number: "",
+    email: "",
+    pin: "",
+  });
+  const [registrationCode, setRegistrationCode] = useState("");
+  const [senderNumber, setSenderNumber] = useState("");
+  const [recipientNumber, setRecipientNumber] = useState("");
+  const [emailAddress, setEmailAddress] = useState("");
+  const [emailVerificationCode, setEmailVerificationCode] = useState("");
+  const [emailVerificationSent, setEmailVerificationSent] = useState(false);
+  const [amount, setAmount] = useState("5.00");
+  const [transactionType, setTransactionType] = useState("TRANSFER");
+
+  // Live Telemetry (Device, IP, and Location detection)
+  const [telemetry, setTelemetry] = useState(() => ({
+    device_id: getBrowserDeviceId(),
+    gps_coordinates: null,
+  }));
+  const [locationStatus, setLocationStatus] = useState("prompt");
+  const [locationUpdatedAt, setLocationUpdatedAt] = useState(0);
+
+  // Verified Recipient Inquiry (standard MoMo name inquiry without private ID leakage)
+  const [recipientName, setRecipientName] = useState("");
+  const [recipientSearching, setRecipientSearching] = useState(false);
+
+  // Authentication & Fraud Enforcement
+  const [session, setSession] = useState(null);
+  const [authPin, setAuthPin] = useState("");
+  const [stepUpInput, setStepUpInput] = useState("");
+  const [stepUpChallenge, setStepUpChallenge] = useState(null);
+  const [receipt, setReceipt] = useState(null);
+
+  // Emergency Freeze State
+  const [walletFrozen, setWalletFrozen] = useState(false);
+  const [freezeMessage, setFreezeMessage] = useState("");
+
+  // Statements History
+  const [recentTransactions, setRecentTransactions] = useState([
+    {
+      id: "MOMO-9812401",
+      date: "Today, 10:24 AM",
+      recipient: "Ama Serwaa (0242002002)",
+      amount: "5.00 GHS",
+      status: "APPROVED",
+      risk_score: "0.14",
+    },
+    {
+      id: "MOMO-9742119",
+      date: "Yesterday, 4:18 PM",
+      recipient: "Merchant Payout (233241234567)",
+      amount: "25.00 GHS",
+      status: "APPROVED",
+      risk_score: "0.18",
+    },
+  ]);
+
+  // Configuration
+  const [configuration, setConfiguration] = useState({
+    currency: "GHS",
+    environment: "sandbox",
+    maximumAmount: null,
+  });
+  const displayCurrency =
+    transactionType === "TRANSFER" ? configuration.currency : "GHS";
+
+  // Recipient live lookup as user types
+  useEffect(() => {
+    const clean = recipientNumber.replace(/\D/g, "");
+    if (clean.length < 8) {
+      setRecipientName("");
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setRecipientSearching(true);
+      try {
+        const res = await fetch(`${API_URL}/api/momo/kyc/lookup?query=${encodeURIComponent(clean)}`);
+        if (res.ok) {
+          const data = await res.json();
+          setRecipientName(data.subscriber?.full_name || "");
+        } else {
+          setRecipientName("");
+        }
+      } catch {
+        setRecipientName("");
+      } finally {
+        setRecipientSearching(false);
+      }
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [recipientNumber]);
+
+  // Automatic Device, IP, and Location Detection
+  const detectClientTelemetry = useCallback(async () => {
+    if (!navigator.permissions?.query) return;
+    try {
+      const permission = await navigator.permissions.query({
+        name: "geolocation",
+      });
+      setLocationStatus(permission.state);
+    } catch {
+      setLocationStatus("prompt");
+    }
+  }, []);
+
+  function requestDeviceLocation() {
+    if (!navigator.geolocation) {
+      setLocationStatus("unavailable");
+      return Promise.resolve(null);
+    }
+    setLocationStatus("requesting");
+    return new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const coordinates = {
+            latitude: Number(position.coords.latitude.toFixed(2)),
+            longitude: Number(position.coords.longitude.toFixed(2)),
+          };
+          setTelemetry((current) => ({
+            ...current,
+            gps_coordinates: coordinates,
+          }));
+          setLocationUpdatedAt(Date.now());
+          setLocationStatus("granted");
+          resolve(coordinates);
+        },
+        (error) => {
+          setTelemetry((current) => ({
+            ...current,
+            gps_coordinates: null,
+          }));
+          setLocationStatus(
+            error.code === error.PERMISSION_DENIED ? "denied" : "unavailable",
+          );
+          resolve(null);
+        },
+        { timeout: 10000, maximumAge: 0 },
+      );
+    });
+  }
+
+  async function ensureCurrentLocation() {
+    if (
+      telemetry.gps_coordinates &&
+      Date.now() - locationUpdatedAt < 5 * 60 * 1000
+    ) {
+      return telemetry.gps_coordinates;
+    }
+    return requestDeviceLocation();
+  }
+
+  const loadGatewayConfig = useCallback(async () => {
+    try {
+      const res = await adminFetch("/api/momo/mtn/disbursement/configuration");
+      if (res.ok) {
+        const data = await res.json();
+        setConfiguration({
+          currency: data.currency || "GHS",
+          environment: data.environment || "production",
+          maximumAmount: data.maximum_amount,
+        });
+      }
+    } catch {
+      // use defaults
+    }
+  }, []);
+
+  useEffect(() => {
+    detectClientTelemetry();
+    loadGatewayConfig();
+    if (!customerToken) return;
+
+    fetch(`${API_URL}/api/momo/customer/me`, {
+      headers: { Authorization: `Bearer ${customerToken}` },
+    })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Sandbox session expired.");
+        setCustomerAccount(data);
+        setSenderNumber(data.phone_number);
+      })
+      .catch(() => {
+        sessionStorage.removeItem("momo-sandbox-customer-token");
+        setCustomerToken("");
+        setCustomerAccount(null);
+        setSenderNumber("");
+      });
+  }, [customerToken, detectClientTelemetry, loadGatewayConfig]);
+
+  async function handleCustomerLogin(event) {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const location =
+        transactionType === "TRANSFER"
+          ? await ensureCurrentLocation()
+          : telemetry.gps_coordinates;
+      if (transactionType === "TRANSFER" && !location) {
+        throw new Error(
+          "Location is required. Allow location access in your browser and try again.",
+        );
+      }
+      const response = await fetch(`${API_URL}/api/momo/customer/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone_number: loginNumber,
+          pin: loginPin,
+          device_id: getBrowserDeviceId(),
+          location_latitude: location?.latitude,
+          location_longitude: location?.longitude,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Sandbox sign-in failed.");
+      sessionStorage.setItem("momo-sandbox-customer-token", data.token);
+      setCustomerToken(data.token);
+      setCustomerAccount(data.customer);
+      setSenderNumber(data.customer.phone_number);
+      setEmailAddress("");
+      setLoginPin("");
+      setCustomerView("signin");
+    } catch (loginError) {
+      setError(loginError.message || "Sandbox sign-in failed.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRegistrationChallenge(event) {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const location = await ensureCurrentLocation();
+      if (!location) {
+        throw new Error(
+          "Location is required. Allow location access in your browser and try again.",
+        );
+      }
+      const response = await fetch(
+        `${API_URL}/api/momo/customer/register/challenge`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...registration,
+            device_id: getBrowserDeviceId(),
+            location_latitude: location.latitude,
+            location_longitude: location.longitude,
+          }),
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Could not start enrollment.");
+      setCustomerView("verify_registration");
+    } catch (registrationError) {
+      setError(registrationError.message || "Could not start enrollment.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRegistrationVerify(event) {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `${API_URL}/api/momo/customer/register/verify`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            phone_number: registration.phone_number,
+            code: registrationCode,
+          }),
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Email verification failed.");
+      sessionStorage.setItem("momo-sandbox-customer-token", data.token);
+      setCustomerToken(data.token);
+      setCustomerAccount(data.customer);
+      setSenderNumber(data.customer.phone_number);
+      setRegistrationCode("");
+      setRegistration({
+        phone_number: "",
+        full_name: "",
+        id_type: "PASSPORT",
+        id_number: "",
+        email: "",
+        pin: "",
+      });
+      setCustomerView("signin");
+    } catch (verificationError) {
+      setError(verificationError.message || "Email verification failed.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function signOutCustomer() {
+    sessionStorage.removeItem("momo-sandbox-customer-token");
+    setCustomerToken("");
+    setCustomerAccount(null);
+    setSenderNumber("");
+    setSession(null);
+    setStep("form");
+    setError("");
+  }
+
+  async function requestEmailVerification() {
+    setError("");
+    try {
+      const response = await fetch(`${API_URL}/api/momo/customer/email/challenge`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${customerToken}`,
+        },
+        body: JSON.stringify({ email: emailAddress }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Could not send verification email.");
+      if (data.email_verified) {
+        setCustomerAccount((current) => ({
+          ...current,
+          email_verified: true,
+          masked_email: data.masked_email,
+        }));
+      } else {
+        setEmailVerificationSent(true);
+      }
+    } catch (verificationError) {
+      setError(verificationError.message || "Could not send verification email.");
+    }
+  }
+
+  async function verifyEmailAddress() {
+    setError("");
+    try {
+      const response = await fetch(`${API_URL}/api/momo/customer/email/verify`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${customerToken}`,
+        },
+        body: JSON.stringify({
+          email: emailAddress,
+          code: emailVerificationCode,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Email verification failed.");
+      setCustomerAccount((current) => ({
+        ...current,
+        email_verified: true,
+        masked_email: data.masked_email,
+      }));
+      setEmailVerificationSent(false);
+      setEmailVerificationCode("");
+    } catch (verificationError) {
+      setError(verificationError.message || "Email verification failed.");
+    }
+  }
+
+  // Step 1: Proceed to PIN Authorization
+  async function handleProceedToAuth(e) {
+    e.preventDefault();
+    setError("");
+
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      setError("Please enter a valid transfer amount.");
+      return;
+    }
+    if (!customerToken || !customerAccount) {
+      setError("Sign in to a sandbox wallet before starting a transfer.");
+      return;
+    }
+    if (!recipientNumber.trim() || recipientNumber.trim().length < 8) {
+      setError("Please enter a valid recipient phone number.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const location = await ensureCurrentLocation();
+      if (!location) {
+        throw new Error(
+          "Location is required for a transfer. Allow location access in browser settings and retry.",
+        );
+      }
+      const payload = {
+        transaction_type: transactionType,
+        amount: parsedAmount,
+        recipient: recipientNumber.trim(),
+        location_latitude: location.latitude,
+        location_longitude: location.longitude,
+        device_id: getBrowserDeviceId(),
+        scenario: "NORMAL",
+        live_mtn: transactionType === "TRANSFER",
+      };
+
+      const res = await fetch(`${API_URL}/api/momo/transaction/initiate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${customerToken}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Unable to initiate transfer.");
+
+      setSession(data);
+      setAuthPin("");
+      setStep("auth");
+    } catch (err) {
+      setError(err.message || "Failed to initiate transfer.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Step 2: Authorize PIN & Run AI Fraud Layer
+  async function handleAuthorizePayment() {
+    const requiredLength = transactionType === "TRANSFER" ? 4 : 6;
+    if (authPin.length !== requiredLength) {
+      setError(
+        transactionType === "TRANSFER"
+          ? "Please enter your 4-digit MoMo PIN."
+          : "Please enter the 6-digit demo OTP.",
+      );
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    setStep("evaluating");
+
+    try {
+      const res = await fetch(`${API_URL}/api/momo/transaction/verify`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${customerToken}`,
+        },
+        body: JSON.stringify({
+          session_id: session.session_id,
+          code: authPin.trim(),
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "PIN verification failed.");
+
+      if (data.status === "STEP_UP_REQUIRED") {
+        setStepUpChallenge(data);
+        setStepUpInput("");
+        setStep("stepup");
+      } else {
+        setReceipt(data);
+        setStep("receipt");
+        if (data.status === "APPROVED") {
+          setRecentTransactions((prev) => [
+            {
+              id: data.reference_id || `MOMO-${Date.now().toString().slice(-7)}`,
+              date: "Just now",
+              recipient: recipientName ? `${recipientName} (${recipientNumber})` : recipientNumber,
+              amount: `${amount} ${displayCurrency}`,
+              status: "APPROVED",
+              risk_score: (data.risk_score || 0.12).toFixed(2),
+            },
+            ...prev,
+          ]);
+        }
+      }
+    } catch (err) {
+      setError(err.message || "Incorrect PIN or authorization failure.");
+      setStep("auth");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Step 3: Complete Step-Up Challenge (Email OTP or National ID)
+  async function handleVerifyStepUp(e) {
+    if (e) e.preventDefault();
+    if (!stepUpInput.trim()) {
+      setError("Please enter the verification code or ID document number.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const res = await fetch(`${API_URL}/api/momo/transaction/verify`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${customerToken}`,
+        },
+        body: JSON.stringify({
+          session_id: session.session_id,
+          code: stepUpInput.trim(),
+          step_up: true,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Step-up verification failed.");
+
+      setReceipt(data);
+      setStep("receipt");
+      if (data.status === "APPROVED") {
+        setRecentTransactions((prev) => [
+          {
+            id: data.reference_id || `MOMO-${Date.now().toString().slice(-7)}`,
+            date: "Just now",
+            recipient: recipientName ? `${recipientName} (${recipientNumber})` : recipientNumber,
+            amount: `${amount} ${displayCurrency}`,
+            status: "APPROVED (STEP-UP)",
+            risk_score: (data.risk_score || 0.42).toFixed(2),
+          },
+          ...prev,
+        ]);
+      }
+    } catch (err) {
+      setError(err.message || "Invalid OTP or ID document. Verification rejected.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function checkMtnTransferStatus() {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `${API_URL}/api/momo/transaction/${session.session_id}/status`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${customerToken}` },
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Could not check MTN status.");
+      setReceipt((current) => ({ ...current, ...data }));
+    } catch (statusError) {
+      setError(statusError.message || "Could not check MTN status.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Keypad Handlers
+  function handleKeypadPress(num) {
+    if (authPin.length < 4) {
+      setAuthPin((prev) => prev + num);
+    }
+  }
+
+  function handleKeypadBackspace() {
+    setAuthPin((prev) => prev.slice(0, -1));
+  }
+
+  function handleKeypadClear() {
+    setAuthPin("");
+  }
+
+  // Emergency Freeze Handler
+  async function handleEmergencyFreeze() {
+    if (!window.confirm("Confirm emergency account freeze? This will block all incoming and outgoing transactions immediately.")) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/momo/account/freeze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customer_ref: senderNumber,
+          code: "2233",
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setWalletFrozen(true);
+        setFreezeMessage(data.message || "Your MoMo wallet has been locked. Contact security operations.");
+      } else {
+        setError(data.detail || "Unable to execute emergency freeze.");
+      }
+    } catch (err) {
+      setError(err.message || "Network error while locking account.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleReset() {
+    setStep("form");
+    setSession(null);
+    setAuthPin("");
+    setStepUpInput("");
+    setStepUpChallenge(null);
+    setReceipt(null);
+    setError("");
+  }
+
+  return (
+    <div className="momo-container">
+      {/* Top Security & Telecom Status Banner */}
+      <header className="momo-nav-header">
+        <div className="momo-brand-block">
+          <span className="momo-logo-box">MTN MoMo</span>
+          <span className="momo-engine-badge">
+            <span className="pulse-indicator" />
+            Protected by AI Fraud Detection Engine
+          </span>
+        </div>
+      </header>
+
+      {/* Main Center Mobile Phone Screen */}
+      <div className="momo-app-wrapper">
+        <div className="phone-chassis">
+          <div className="phone-screen-inner">
+            {/* Native Status Bar */}
+            <div className="screen-status-bar">
+              <span className="time-display">09:41</span>
+              <div className="status-icons-group">
+                <span>4G LTE</span>
+                <span>98%</span>
+              </div>
+            </div>
+
+            {/* MTN Curved Yellow Header */}
+            <div className="yellow-header-card">
+              <div className="curved-bg-motif" />
+
+              <div className="header-top-row">
+                <div className="subscriber-greeting">
+                  <span className="greeting-small">Subscriber Account</span>
+                  <h2 className="sender-number-display">
+                    {senderNumber || "Sign in required"}
+                  </h2>
+                  <span className="account-status-tag">
+                    {customerAccount ? "Sandbox demo wallet" : "No wallet signed in"}
+                  </span>
+                </div>
+                <div className="momo-pay-badge">
+                  <QrIcon />
+                  <span>MoMo Pay</span>
+                </div>
+              </div>
+
+              {/* Balance Box with Toggle */}
+              <div className="balance-surface">
+                <div className="balance-top-labels">
+                  <span className="balance-label-text">Available Balance</span>
+                  <button
+                    type="button"
+                    className="balance-visibility-btn"
+                    onClick={() => setShowBalance(!showBalance)}
+                  >
+                    {showBalance ? "Hide" : "Show"}
+                  </button>
+                </div>
+                <div className="balance-amount-display">
+                  <span className="currency-symbol">{displayCurrency}</span>
+                  <strong className="balance-figures">
+                    {showBalance ? "5,000.00" : "••••••••"}
+                  </strong>
+                </div>
+              </div>
+            </div>
+
+            {/* 4 Circular Action Buttons */}
+            <div className="quick-actions-bar">
+              <button
+                type="button"
+                className={`quick-action-unit ${activeModal === "send" ? "selected" : ""}`}
+                onClick={() => {
+                  handleReset();
+                  setActiveModal("send");
+                }}
+              >
+                <div className="action-circle">
+                  <SendIcon />
+                </div>
+                <span className="action-name">Send MoMo</span>
+              </button>
+
+              <button
+                type="button"
+                className={`quick-action-unit ${activeModal === "approvals" ? "selected" : ""}`}
+                onClick={() => setActiveModal("approvals")}
+              >
+                <div className="action-circle">
+                  <ShieldIcon />
+                </div>
+                <span className="action-name">Approvals</span>
+              </button>
+
+              <button
+                type="button"
+                className="quick-action-unit"
+                onClick={() => {
+                  setTransactionType("CASH_OUT");
+                  setRecipientNumber("BANK-ACC-7001");
+                  setActiveModal("send");
+                }}
+              >
+                <div className="action-circle">
+                  <CashoutIcon />
+                </div>
+                <span className="action-name">Cashout</span>
+              </button>
+
+              <button
+                type="button"
+                className="quick-action-unit"
+                onClick={() => {
+                  setTransactionType("CASH_IN");
+                  setRecipientNumber("BANK-ACC-7001");
+                  setActiveModal("send");
+                }}
+              >
+                <div className="action-circle">
+                  <BankIcon />
+                </div>
+                <span className="action-name">Bank Transfer</span>
+              </button>
+            </div>
+
+            {/* App Scrollable Content */}
+            <div className="phone-body-content">
+              {walletFrozen && (
+                <div className="status-banner banner-danger">
+                  <LockIcon />
+                  <div>
+                    <strong>Wallet Frozen</strong>
+                    <p>{freezeMessage}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Service Navigation List */}
+              <div className="service-nav-list">
+                <button
+                  type="button"
+                  className="service-row-btn"
+                  onClick={() => setActiveModal("statements")}
+                >
+                  <div className="service-row-left">
+                    <div className="service-icon-wrapper">
+                      <StatementIcon />
+                    </div>
+                    <div>
+                      <strong>Account Statements</strong>
+                      <span>Review recent transaction logs &amp; risk scores</span>
+                    </div>
+                  </div>
+                  <span className="row-chevron">›</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="service-row-btn"
+                  onClick={() => setActiveModal("freeze")}
+                >
+                  <div className="service-row-left">
+                    <div className="service-icon-wrapper icon-danger">
+                      <AlertIcon />
+                    </div>
+                    <div>
+                      <strong>Emergency Security Freeze</strong>
+                      <span>Lock wallet immediately if suspicious activity occurs</span>
+                    </div>
+                  </div>
+                  <span className="row-chevron">›</span>
+                </button>
+              </div>
+
+              {/* Security Telemetry Verification Notice */}
+              <div className="security-notice-card">
+                <div className="notice-header">
+                  <ShieldIcon />
+                  <strong>Real-Time Behavioral Security</strong>
+                </div>
+                <p>
+                  Transactions are continuously monitored for hardware identity changes, IP network
+                  anomalies, unusual locations, and abnormal transaction patterns.
+                </p>
+              </div>
+            </div>
+
+            {/* Bottom App Navigation */}
+            <nav className="phone-bottom-tabs">
+              <button
+                type="button"
+                className={`tab-item ${activeTab === "home" ? "active" : ""}`}
+                onClick={() => setActiveTab("home")}
+              >
+                <span className="tab-label">Home</span>
+              </button>
+
+              <button
+                type="button"
+                className={`tab-item ${activeTab === "buy" ? "active" : ""}`}
+                onClick={() => setActiveTab("buy")}
+              >
+                <span className="tab-label">Buy</span>
+              </button>
+
+              <div className="pulse-floating-container">
+                <button
+                  type="button"
+                  className="pulse-floating-btn"
+                  onClick={() => {
+                    handleReset();
+                    setActiveModal("send");
+                  }}
+                  title="Direct MoMo Transfer"
+                >
+                  <SendIcon />
+                </button>
+                <span className="pulse-text">MoMo</span>
+              </div>
+
+              <button
+                type="button"
+                className={`tab-item ${activeTab === "momo" ? "active" : ""}`}
+                onClick={() => {
+                  handleReset();
+                  setActiveModal("send");
+                }}
+              >
+                <span className="tab-label">Transfer</span>
+              </button>
+
+              <button
+                type="button"
+                className={`tab-item ${activeTab === "more" ? "active" : ""}`}
+                onClick={() => setActiveModal("statements")}
+              >
+                <span className="tab-label">More</span>
+              </button>
+            </nav>
+          </div>
+        </div>
+      </div>
+
+      {/* ========================================================= */}
+      {/* MODAL 1: SEND MOMO (ENTER OWN NUMBER, RECIPIENT, AMOUNT)  */}
+      {/* ========================================================= */}
+      {activeModal === "send" && (
+        <div className="modal-backdrop" onClick={() => setActiveModal(null)}>
+          <div className="modal-sheet-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="panel-header">
+              <div className="panel-header-titles">
+                <span className="network-tag">MTN Ghana MoMo</span>
+                <h3>Transfer Funds</h3>
+              </div>
+              <button
+                type="button"
+                className="close-panel-btn"
+                onClick={() => setActiveModal(null)}
+              >
+                <CrossIcon />
+              </button>
+            </div>
+
+            {error && (
+              <div className="form-error-alert">
+                <AlertIcon />
+                <span>{error}</span>
+              </div>
+            )}
+
+            {/* STEP 1: TRANSACTION DETAILS FORM */}
+            {step === "form" && !customerAccount && (
+              <div className="transaction-form">
+                {customerView !== "verify_registration" && (
+                  <div className="challenge-mode-tabs">
+                    <button
+                      type="button"
+                      className={`mode-tab ${customerView === "signin" ? "active" : ""}`}
+                      onClick={() => setCustomerView("signin")}
+                    >
+                      Sign in
+                    </button>
+                    <button
+                      type="button"
+                      className={`mode-tab ${customerView === "register" ? "active" : ""}`}
+                      onClick={() => setCustomerView("register")}
+                    >
+                      Create sandbox wallet
+                    </button>
+                  </div>
+                )}
+
+                <div className="privacy-signal-note">
+                  Location is required for account enrollment and transfers.
+                  Device, network IP, and approximate location signals are
+                  recorded for fraud detection and are not displayed here.
+                  Passport/ID numbers are stored as salted verification hashes;
+                  this demo does not validate documents with an official source.
+                </div>
+
+                {customerView === "signin" && (
+                  <form onSubmit={handleCustomerLogin} className="transaction-form">
+                    <div className="field-block">
+                      <label htmlFor="sandbox-login-phone" className="field-label">
+                        Ghana mobile number
+                      </label>
+                      <input
+                        id="sandbox-login-phone"
+                        type="tel"
+                        required
+                        autoComplete="username"
+                        value={loginNumber}
+                        onChange={(event) => setLoginNumber(event.target.value)}
+                        placeholder="0241234567"
+                        className="standard-input"
+                      />
+                    </div>
+                    <div className="field-block">
+                      <label htmlFor="sandbox-login-pin" className="field-label">
+                        Four-digit wallet PIN
+                      </label>
+                      <input
+                        id="sandbox-login-pin"
+                        type="password"
+                        required
+                        inputMode="numeric"
+                        autoComplete="current-password"
+                        maxLength={4}
+                        value={loginPin}
+                        onChange={(event) =>
+                          setLoginPin(event.target.value.replace(/\D/g, "").slice(0, 4))
+                        }
+                        className="standard-input"
+                      />
+                    </div>
+                    <p className="field-hint">
+                      Existing demo registry numbers still work. If your number
+                      is not registered, create a sandbox wallet first.
+                    </p>
+                    <button type="submit" className="primary-action-btn" disabled={loading}>
+                      {loading ? "Checking location and signing in…" : "Sign in"}
+                    </button>
+                  </form>
+                )}
+
+                {customerView === "register" && (
+                  <form
+                    onSubmit={handleRegistrationChallenge}
+                    className="transaction-form"
+                  >
+                    <div className="field-block">
+                      <label htmlFor="register-name" className="field-label">
+                        Full name
+                      </label>
+                      <input
+                        id="register-name"
+                        required
+                        autoComplete="name"
+                        value={registration.full_name}
+                        onChange={(event) =>
+                          setRegistration((current) => ({
+                            ...current,
+                            full_name: event.target.value,
+                          }))
+                        }
+                        className="standard-input"
+                      />
+                    </div>
+                    <div className="field-block">
+                      <label htmlFor="register-phone" className="field-label">
+                        Ghana mobile number
+                      </label>
+                      <input
+                        id="register-phone"
+                        type="tel"
+                        required
+                        autoComplete="tel"
+                        value={registration.phone_number}
+                        onChange={(event) =>
+                          setRegistration((current) => ({
+                            ...current,
+                            phone_number: event.target.value,
+                          }))
+                        }
+                        placeholder="0241234567"
+                        className="standard-input"
+                      />
+                    </div>
+                    <div className="field-block">
+                      <label htmlFor="register-id-type" className="field-label">
+                        Identity document
+                      </label>
+                      <select
+                        id="register-id-type"
+                        value={registration.id_type}
+                        onChange={(event) =>
+                          setRegistration((current) => ({
+                            ...current,
+                            id_type: event.target.value,
+                          }))
+                        }
+                        className="standard-input"
+                      >
+                        <option value="PASSPORT">Passport</option>
+                        <option value="GHANA_CARD">Ghana Card</option>
+                      </select>
+                      <input
+                        id="register-id-number"
+                        required
+                        autoComplete="off"
+                        value={registration.id_number}
+                        onChange={(event) =>
+                          setRegistration((current) => ({
+                            ...current,
+                            id_number: event.target.value,
+                          }))
+                        }
+                        placeholder="Document number"
+                        className="standard-input"
+                      />
+                    </div>
+                    <div className="field-block">
+                      <label htmlFor="register-email" className="field-label">
+                        Email for sign-in security and step-up codes
+                      </label>
+                      <input
+                        id="register-email"
+                        type="email"
+                        required
+                        autoComplete="email"
+                        value={registration.email}
+                        onChange={(event) =>
+                          setRegistration((current) => ({
+                            ...current,
+                            email: event.target.value,
+                          }))
+                        }
+                        className="standard-input"
+                      />
+                    </div>
+                    <div className="field-block">
+                      <label htmlFor="register-pin" className="field-label">
+                        Choose a four-digit demo wallet PIN
+                      </label>
+                      <input
+                        id="register-pin"
+                        type="password"
+                        required
+                        inputMode="numeric"
+                        maxLength={4}
+                        value={registration.pin}
+                        onChange={(event) =>
+                          setRegistration((current) => ({
+                            ...current,
+                            pin: event.target.value.replace(/\D/g, "").slice(0, 4),
+                          }))
+                        }
+                        className="standard-input"
+                      />
+                    </div>
+                    <p className="location-required-note">
+                      Location access is required. Pressing continue will ask
+                      your browser to share an approximate location.
+                    </p>
+                    <button type="submit" className="primary-action-btn" disabled={loading}>
+                      {loading ? "Requesting verification…" : "Email me a verification code"}
+                    </button>
+                  </form>
+                )}
+
+                {customerView === "verify_registration" && (
+                  <form
+                    onSubmit={handleRegistrationVerify}
+                    className="transaction-form"
+                  >
+                    <p className="field-hint">
+                      Enter the six-digit code sent to {registration.email}.
+                    </p>
+                    <label htmlFor="register-code" className="field-label">
+                      Email verification code
+                    </label>
+                    <input
+                      id="register-code"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={6}
+                      required
+                      value={registrationCode}
+                      onChange={(event) =>
+                        setRegistrationCode(
+                          event.target.value.replace(/\D/g, "").slice(0, 6),
+                        )
+                      }
+                      className="large-code-input"
+                    />
+                    <button type="submit" className="primary-action-btn" disabled={loading}>
+                      {loading ? "Verifying…" : "Verify email and create wallet"}
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => setCustomerView("register")}
+                    >
+                      Back to account details
+                    </button>
+                  </form>
+                )}
+              </div>
+            )}
+
+            {step === "form" && customerAccount && (
+              <form onSubmit={handleProceedToAuth} className="transaction-form">
+                {/* Transfer Channel Selector */}
+                <div className="field-block">
+                  <label className="field-label">Transfer Channel</label>
+                  <div className="channel-selector-row">
+                    {TRANSACTION_CHANNELS.map((ch) => (
+                      <button
+                        key={ch.id}
+                        type="button"
+                        className={`channel-btn ${transactionType === ch.id ? "active" : ""}`}
+                        onClick={() => {
+                          setTransactionType(ch.id);
+                          if (ch.id === "CASH_OUT" || ch.id === "CASH_IN") {
+                            setRecipientNumber("BANK-ACC-7001");
+                          } else {
+                            setRecipientNumber("");
+                          }
+                        }}
+                      >
+                        <strong>{ch.label}</strong>
+                        <small>{ch.sub}</small>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {transactionType !== "TRANSFER" && (
+                  <p className="field-hint">
+                    Bank-to-wallet and wallet-to-bank are local demo scenarios.
+                    Only wallet-to-wallet sends a request to the MTN sandbox.
+                  </p>
+                )}
+
+                <div className="field-block account-session-card">
+                  <span className="field-label">Signed-in sandbox wallet</span>
+                  <strong>{customerAccount.name} · {senderNumber}</strong>
+                  <span className="field-hint">
+                    Step-up email: {customerAccount.masked_email || "not verified"}
+                    {customerAccount.email_verified ? " (verified)" : " (not verified)"}
+                  </span>
+                  {!customerAccount.email_verified && (
+                    <div className="email-verification-fields">
+                      <label htmlFor="customer-email" className="field-label">
+                        Email for security verification
+                      </label>
+                      <input
+                        id="customer-email"
+                        type="email"
+                        autoComplete="email"
+                        value={emailAddress}
+                        onChange={(event) => setEmailAddress(event.target.value)}
+                        placeholder="you@example.com"
+                        className="standard-input"
+                      />
+                      {!emailVerificationSent ? (
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={requestEmailVerification}
+                          disabled={!emailAddress.includes("@")}
+                        >
+                          Send verification code
+                        </button>
+                      ) : (
+                        <>
+                          <label htmlFor="customer-email-code" className="field-label">
+                            Six-digit email code
+                          </label>
+                          <input
+                            id="customer-email-code"
+                            type="text"
+                            inputMode="numeric"
+                            maxLength={6}
+                            value={emailVerificationCode}
+                            onChange={(event) =>
+                              setEmailVerificationCode(
+                                event.target.value.replace(/\D/g, "").slice(0, 6),
+                              )
+                            }
+                            className="standard-input"
+                          />
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={verifyEmailAddress}
+                            disabled={emailVerificationCode.length !== 6}
+                          >
+                            Verify email address
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  <button type="button" className="text-button" onClick={signOutCustomer}>
+                    Sign out
+                  </button>
+                </div>
+
+                {/* RECIPIENT NUMBER */}
+                <div className="field-block">
+                  <label htmlFor="recipient-input" className="field-label">
+                    {transactionType === "TRANSFER"
+                      ? "Recipient Mobile Number"
+                      : "Demo Bank Account"}
+                  </label>
+                  <div className="input-with-loader">
+                    <input
+                      id="recipient-input"
+                      type="text"
+                      required
+                      value={recipientNumber}
+                      onChange={(e) => setRecipientNumber(e.target.value)}
+                      placeholder={
+                        transactionType === "TRANSFER"
+                          ? "e.g. 0242002002"
+                          : "e.g. BANK-ACC-7001"
+                      }
+                      className="standard-input"
+                    />
+                    {recipientSearching && <span className="input-spinner" />}
+                  </div>
+
+                  {/* Standard Recipient Inquiry Confirmation */}
+                  {recipientName && (
+                    <div className="recipient-verified-badge">
+                      <CheckIcon />
+                      <span>Verified Recipient: <strong>{recipientName}</strong></span>
+                    </div>
+                  )}
+                </div>
+
+                {/* AMOUNT INPUT */}
+                <div className="field-block">
+                  <label htmlFor="amount-input" className="field-label">
+                    Amount ({displayCurrency})
+                  </label>
+                  <div className="amount-input-group">
+                    <span className="currency-prefix">{displayCurrency}</span>
+                    <input
+                      id="amount-input"
+                      type="number"
+                      step="0.01"
+                      min="0.10"
+                      required
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                      placeholder="0.00"
+                      className="amount-input-field"
+                    />
+                  </div>
+                </div>
+
+                {transactionType === "TRANSFER" && (
+                  <div className="privacy-signal-note">
+                    Location permission is required for transfers. The browser
+                    will request it when you continue. Device, IP, and
+                    approximate location signals are stored for account
+                    security and fraud detection; their values are not shown.
+                    {locationStatus === "denied" &&
+                      " Location is blocked: enable it for this site in browser settings, then retry."}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="primary-action-btn"
+                >
+                  {loading ? "Processing..." : "Continue to Authorization"}
+                </button>
+              </form>
+            )}
+
+            {/* STEP 2: MO MO PIN KEYPAD SCREEN */}
+            {step === "auth" && (
+              <div className="pin-screen">
+                <div className="pin-screen-header">
+                  <LockIcon />
+                  <h4>
+                    {transactionType === "TRANSFER"
+                      ? "Enter 4-Digit MoMo PIN"
+                      : "Enter 6-Digit Demo OTP"}
+                  </h4>
+                  <p>
+                    Authorizing transfer of <strong>{displayCurrency} {parseFloat(amount).toFixed(2)}</strong> to{" "}
+                    <strong>{recipientName ? `${recipientName} (${recipientNumber})` : recipientNumber}</strong>
+                  </p>
+                </div>
+
+                <div className="pin-dots-display">
+                  {Array.from(
+                    { length: transactionType === "TRANSFER" ? 4 : 6 },
+                    (_, idx) => (
+                    <div
+                      key={idx}
+                      className={`pin-circle ${authPin.length > idx ? "active" : ""}`}
+                    />
+                    ),
+                  )}
+                </div>
+
+                {transactionType === "TRANSFER" ? (
+                  <div className="keypad-layout">
+                    {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((digit) => (
+                      <button
+                        key={digit}
+                        type="button"
+                        className="keypad-button"
+                        onClick={() => handleKeypadPress(digit.toString())}
+                      >
+                        {digit}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      className="keypad-button keypad-btn-func"
+                      onClick={handleKeypadClear}
+                    >
+                      Clear
+                    </button>
+                    <button
+                      type="button"
+                      className="keypad-button"
+                      onClick={() => handleKeypadPress("0")}
+                    >
+                      0
+                    </button>
+                    <button
+                      type="button"
+                      className="keypad-button keypad-btn-func"
+                      onClick={handleKeypadBackspace}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ) : (
+                  <div className="field-block">
+                    <label htmlFor="demo-otp-input" className="field-label">
+                      Six-digit demo authorization code
+                    </label>
+                    <input
+                      id="demo-otp-input"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={6}
+                      value={authPin}
+                      onChange={(event) =>
+                        setAuthPin(event.target.value.replace(/\D/g, "").slice(0, 6))
+                      }
+                      className="large-code-input"
+                    />
+                    {session?.demo_hint && (
+                      <button
+                        type="button"
+                        className="quick-fill-link"
+                        onClick={() => setAuthPin(session.demo_hint)}
+                      >
+                        Use demo OTP: {session.demo_hint}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                <div className="form-button-row">
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => setStep("form")}
+                    disabled={loading}
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-action-btn"
+                    onClick={handleAuthorizePayment}
+                    disabled={
+                      loading ||
+                      authPin.length !== (transactionType === "TRANSFER" ? 4 : 6)
+                    }
+                  >
+                    {loading ? "Authorizing..." : "Confirm & Send"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* STEP 2.5: AI FRAUD RADAR SCANNING */}
+            {step === "evaluating" && (
+              <div className="scanning-view">
+                <div className="scanner-spinner" />
+                <h4>Analyzing Real-Time Fraud Signals</h4>
+                <p>
+                  Evaluating transaction velocity, device hardware signature, and IP location with
+                  the Adaptive Isolation Forest model.
+                </p>
+              </div>
+            )}
+
+            {/* STEP 3: STEP-UP IDENTITY CHALLENGE */}
+            {step === "stepup" && stepUpChallenge && (
+              <div className="stepup-view">
+                <div className="stepup-header-box">
+                  <ShieldIcon />
+                  <div>
+                    <h4>Identity Verification Required</h4>
+                    <p>
+                      An unfamiliar device or network was detected. Complete step-up authorization
+                      to release payment.
+                    </p>
+                  </div>
+                </div>
+
+                {stepUpChallenge.reasons?.length > 0 && (
+                  <div className="reasons-list-card">
+                    <span>Detected Security Signals:</span>
+                    <ul>
+                      {stepUpChallenge.reasons.map((r, i) => (
+                        <li key={i}>{r}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <form onSubmit={handleVerifyStepUp} className="stepup-form-body">
+                  <div className="field-block">
+                    <label htmlFor="stepup-otp" className="field-label">
+                      Enter the 6-digit code sent to your verified email
+                    </label>
+                    <input
+                      id="stepup-otp"
+                      type="text"
+                      maxLength={6}
+                      autoFocus
+                      value={stepUpInput}
+                      onChange={(e) => setStepUpInput(e.target.value.replace(/\D/g, ""))}
+                      placeholder="000000"
+                      className="large-code-input"
+                    />
+                    {stepUpChallenge.demo_hint && !stepUpChallenge.live_mtn && (
+                      <button
+                        type="button"
+                        className="quick-fill-link"
+                        onClick={() => setStepUpInput(stepUpChallenge.demo_hint)}
+                      >
+                        Fill Code: {stepUpChallenge.demo_hint}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="form-button-row">
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={handleReset}
+                      disabled={loading}
+                    >
+                      Cancel Transfer
+                    </button>
+                    <button
+                      type="submit"
+                      className="primary-action-btn"
+                      disabled={loading || stepUpInput.length < 4}
+                    >
+                      {loading ? "Verifying..." : "Verify & Authorize"}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {/* STEP 4: DIGITAL RECEIPT */}
+            {step === "receipt" && receipt && (
+              <div className="receipt-view">
+                {["APPROVED", "PENDING", "COMPLETED"].includes(receipt.status) ? (
+                  <div>
+                    <div className="receipt-success-banner">
+                      <div className="receipt-badge-circle">
+                        <CheckIcon />
+                      </div>
+                      <h4>
+                        {receipt.status === "PENDING"
+                          ? "MTN Status Pending"
+                          : receipt.status === "COMPLETED"
+                            ? "Transfer Confirmed"
+                            : "Transaction Approved"}
+                      </h4>
+                      <p>
+                        {receipt.status === "PENDING"
+                          ? "MTN accepted the request, but the final outcome is not confirmed. Check the status before retrying."
+                          : receipt.status === "COMPLETED"
+                            ? "MTN confirmed that the transfer completed."
+                            : receipt.live_mtn
+                              ? "Transfer accepted by MTN."
+                              : "Demo transaction completed successfully."}
+                      </p>
+                    </div>
+
+                    <div className="receipt-table">
+                      <div className="receipt-data-row">
+                        <span>Transaction Reference:</span>
+                        <code>{receipt.transaction_reference}</code>
+                      </div>
+                      {receipt.financialTransactionId && (
+                        <div className="receipt-data-row row-highlight">
+                          <span>MTN Financial ID:</span>
+                          <strong>{receipt.financialTransactionId}</strong>
+                        </div>
+                      )}
+                      <div className="receipt-data-row">
+                        <span>Amount Transferred:</span>
+                        <strong className="amount-text">{displayCurrency} {parseFloat(amount).toFixed(2)}</strong>
+                      </div>
+                      <div className="receipt-data-row">
+                        <span>Sender Number:</span>
+                        <span>{senderNumber}</span>
+                      </div>
+                      <div className="receipt-data-row">
+                        <span>Recipient:</span>
+                        <strong>{recipientName ? `${recipientName} (${recipientNumber})` : recipientNumber}</strong>
+                      </div>
+                      <div className="receipt-data-row">
+                        <span>Fraud Risk Assessment:</span>
+                        <span className="risk-tag risk-low">
+                          {receipt.risk_level || "LOW"} (Score: {receipt.risk_score ? (receipt.risk_score * 100).toFixed(0) : "12"}%)
+                        </span>
+                      </div>
+                    </div>
+                    {receipt.status === "PENDING" && (
+                      <button
+                        type="button"
+                        className="primary-action-btn"
+                        onClick={checkMtnTransferStatus}
+                        disabled={loading}
+                      >
+                        {loading ? "Checking..." : "Check MTN transfer status"}
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div>
+                    <div className="receipt-declined-banner">
+                      <div className="receipt-declined-circle">
+                        <CrossIcon />
+                      </div>
+                      <h4>
+                        {receipt.status === "FAILED"
+                          ? "Transfer Failed"
+                          : "Transaction Declined"}
+                      </h4>
+                      <p>
+                        {receipt.status === "FAILED"
+                          ? receipt.message || "MTN did not accept the transfer."
+                          : receipt.message ||
+                            "Blocked by fraud defense engine. Money did not leave your wallet."}
+                      </p>
+                    </div>
+
+                    <div className="receipt-table">
+                      <div className="receipt-data-row">
+                        <span>Decision:</span>
+                        <strong className="text-danger">{receipt.decision || "BLOCKED"}</strong>
+                      </div>
+                      <div className="receipt-data-row">
+                        <span>Risk Tier:</span>
+                        <span className="risk-tag risk-high">{receipt.risk_level}</span>
+                      </div>
+                      {receipt.reasons?.length > 0 && (
+                        <div className="reasons-block">
+                          <span>Reasons Flagged:</span>
+                          <ul>
+                            {receipt.reasons.map((r, i) => (
+                              <li key={i}>{r}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div className="form-button-row">
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => setActiveModal(null)}
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-action-btn"
+                    onClick={handleReset}
+                  >
+                    New Transfer
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL 2: ACCOUNT STATEMENTS                               */}
+      {/* ========================================================= */}
+      {activeModal === "statements" && (
+        <div className="modal-backdrop" onClick={() => setActiveModal(null)}>
+          <div className="modal-sheet-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="panel-header">
+              <div className="panel-header-titles">
+                <span className="network-tag">Transaction History</span>
+                <h3>Account Statements</h3>
+              </div>
+              <button
+                type="button"
+                className="close-panel-btn"
+                onClick={() => setActiveModal(null)}
+              >
+                <CrossIcon />
+              </button>
+            </div>
+
+            <div className="statements-feed">
+              {recentTransactions.map((tx) => (
+                <div key={tx.id} className="statement-row-card">
+                  <div className="statement-icon-box">
+                    <SendIcon />
+                  </div>
+                  <div className="statement-info">
+                    <strong>{tx.recipient}</strong>
+                    <span>{tx.date}</span>
+                    <small>Ref: {tx.id}</small>
+                  </div>
+                  <div className="statement-right">
+                    <strong>-{tx.amount}</strong>
+                    <span className="statement-status-pill">{tx.status}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL 3: EMERGENCY FREEZE WALLET                          */}
+      {/* ========================================================= */}
+      {activeModal === "freeze" && (
+        <div className="modal-backdrop" onClick={() => setActiveModal(null)}>
+          <div className="modal-sheet-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="panel-header">
+              <div className="panel-header-titles">
+                <span className="network-tag tag-danger">Security Operations</span>
+                <h3>Emergency Account Lock</h3>
+              </div>
+              <button
+                type="button"
+                className="close-panel-btn"
+                onClick={() => setActiveModal(null)}
+              >
+                <CrossIcon />
+              </button>
+            </div>
+
+            <div className="freeze-dialog-content">
+              <div className="freeze-alert-box">
+                <AlertIcon />
+                <div>
+                  <strong>Suspected Fraud or Stolen SIM?</strong>
+                  <p>
+                    Activating an emergency freeze immediately halts all transfers from this number
+                    and triggers an incident review in the Security Operations Center.
+                  </p>
+                </div>
+              </div>
+
+              {freezeMessage && (
+                <div className="form-success-alert">
+                  <CheckIcon />
+                  <span>{freezeMessage}</span>
+                </div>
+              )}
+
+              <button
+                type="button"
+                className="freeze-action-btn"
+                disabled={loading || walletFrozen}
+                onClick={handleEmergencyFreeze}
+              >
+                {loading ? "Locking..." : walletFrozen ? "Wallet Is Locked" : "Lock My MoMo Wallet Immediately"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

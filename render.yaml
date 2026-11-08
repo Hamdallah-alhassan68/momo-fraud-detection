@@ -20,5 +20,11 @@ services:
         generateValue: true
       - key: MOMO_AUDIT_HMAC_KEY
         generateValue: true
+      - key: MOMO_ADMIN_TOKEN
+        sync: false
+      - key: MOMO_ENABLE_DEMO_ADMIN_USERS
+        value: "false"
+      - key: MTN_DISBURSEMENT_ENVIRONMENT
+        value: sandbox
       - key: FRONTEND_ORIGINS
         sync: false

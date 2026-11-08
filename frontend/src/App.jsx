@@ -3,6 +3,7 @@ import AdaptiveIntelligence from "./AdaptiveIntelligence.jsx";
 import AdminDashboard from "./AdminDashboard.jsx";
 import AuditLogs from "./AuditLogs.jsx";
 import LiveDashboard from "./LiveDashboard.jsx";
+import MTNDisbursement from "./MTNDisbursement.jsx";
 import MomoSimulator from "./MomoSimulator.jsx";
 import TransactionAssessment from "./TransactionAssessment.jsx";
 import {
@@ -28,6 +29,7 @@ function AdminConsole({ currentUser }) {
 const PAGES = [
   { id: "dashboard", label: "Overview", component: AdminConsole },
   { id: "simulator", label: "MoMo simulator", component: MomoSimulator },
+  { id: "mtn-disbursement", label: "Send MoMo", component: MTNDisbursement },
   {
     id: "adaptive",
     label: "Adaptive intelligence",
@@ -67,15 +69,16 @@ const PRESET_DEMO_CREDENTIALS = [
     tag: "Read-Only & Audit Integrity",
   },
 ];
+const DEMO_LOGIN_ENABLED = import.meta.env.DEV;
 
 function App() {
   const [page, setPage] = useState("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
   const [adminToken, setAdminTokenState] = useState(getAdminToken);
   const [currentUser, setCurrentUserState] = useState(getCurrentUser);
-  const [authMode, setAuthMode] = useState("named"); // "named" or "token"
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("Admin@MoMo2026!");
+  const [authMode, setAuthMode] = useState("token");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [loginToken, setLoginToken] = useState("");
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
@@ -321,31 +324,32 @@ function App() {
 
                 {authMode === "named" ? (
                   <form onSubmit={handleNamedLogin}>
-                    {/* Role Quick Selector for easy testing */}
-                    <div className="demo-role-quickselect">
-                      <span className="demo-role-quickselect-label">
-                        1-Click Role Login
-                      </span>
-                      {PRESET_DEMO_CREDENTIALS.map((preset) => (
-                        <button
-                          key={preset.role}
-                          type="button"
-                          className="demo-role-btn"
-                          onClick={() => handleQuickFill(preset)}
-                          title={`Select ${preset.label}`}
-                        >
-                          <span>
-                            <strong>{preset.label}</strong>
-                            <small style={{ display: "block", color: "#64748b", fontSize: "0.68rem" }}>
-                              {preset.tag}
-                            </small>
-                          </span>
-                          <span className={`role-badge ${preset.badgeClass}`}>
-                            {preset.role}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+                    {DEMO_LOGIN_ENABLED && (
+                      <div className="demo-role-quickselect">
+                        <span className="demo-role-quickselect-label">
+                          1-Click Role Login
+                        </span>
+                        {PRESET_DEMO_CREDENTIALS.map((preset) => (
+                          <button
+                            key={preset.role}
+                            type="button"
+                            className="demo-role-btn"
+                            onClick={() => handleQuickFill(preset)}
+                            title={`Select ${preset.label}`}
+                          >
+                            <span>
+                              <strong>{preset.label}</strong>
+                              <small style={{ display: "block", color: "#64748b", fontSize: "0.68rem" }}>
+                                {preset.tag}
+                              </small>
+                            </span>
+                            <span className={`role-badge ${preset.badgeClass}`}>
+                              {preset.role}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
 
                     <label htmlFor="admin-username">Username</label>
                     <input
@@ -378,6 +382,9 @@ function App() {
                   </form>
                 ) : (
                   <form onSubmit={handleTokenLogin}>
+                    <p className="login-note">
+                      Live transfers require the dedicated backend admin token.
+                    </p>
                     <label htmlFor="admin-token">Master access token</label>
                     <input
                       id="admin-token"
@@ -398,12 +405,16 @@ function App() {
                   </form>
                 )}
 
-                <div className="login-divider"><span>DEMO ENVIRONMENT</span></div>
-                <p className="login-note">
-                  Pre-configured demo users enforce role privileges (Admin, Analyst,
-                  Viewer) with PBKDF2 hashing, session tokens, and append-only HMAC
-                  audit trails.
-                </p>
+                {DEMO_LOGIN_ENABLED && (
+                  <>
+                    <div className="login-divider"><span>DEMO ENVIRONMENT</span></div>
+                    <p className="login-note">
+                      Pre-configured demo users enforce role privileges with
+                      session tokens and append-only audit trails. Demo accounts
+                      cannot authorize live transfers.
+                    </p>
+                  </>
+                )}
               </div>
             </div>
           </main>
