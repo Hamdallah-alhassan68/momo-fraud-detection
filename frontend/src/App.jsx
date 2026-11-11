@@ -85,7 +85,7 @@ function App() {
 
   const activePage = PAGES.find((item) => item.id === page);
   const Active = activePage.component;
-  const needsAdmin = page !== "simulator";
+  const needsAdmin = !["simulator", "mtn-disbursement"].includes(page);
 
   useEffect(() => {
     // If we have a token but no user object, fetch / verify it
