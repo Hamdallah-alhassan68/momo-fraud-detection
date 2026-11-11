@@ -49,12 +49,20 @@ Keep the service at one instance while using its SQLite database and
 in-process event stream.
 
 The Blueprint selects MTN sandbox and disables the bundled demo-admin accounts
-for hosted deployments. Set SMTP settings in Render to enable customer
-enrollment and email verification. Provision named analyst/admin users through
-the protected operator workflow; never publish operator or MTN credentials.
-Keep MTN sandbox selected while public testers are using the application.
+for hosted deployments. Set SMTP settings in Render only if using optional
+email-ownership verification. MEDIUM-risk transfer verification uses the
+security code selected at signup, not an emailed transaction code. Use a
+dedicated SMTP sender/mailbox and verify its domain authentication before
+testing email delivery. Provision named
+analyst/admin users through the protected operator workflow; never publish
+operator or MTN credentials. Keep MTN sandbox selected while public testers
+are using the application.
 Production Disbursement requires separate MTN production credentials and an
 explicit, private operator setup; do not enable it for a public testing site.
+The hosted Blueprint sets `MOMO_SIMULATION_ONLY=true`: wallet transfers change
+only demo balances, and all MTN Collection/Disbursement request and status
+endpoints are disabled. Do not add MTN credentials or a callback URL for this
+pilot. The application does not currently implement an MTN callback receiver.
 
 Once the backend deploy finishes, copy its public HTTPS origin from Render.
 For a Vercel frontend deployment, set the project root directory to `frontend`,
@@ -78,35 +86,74 @@ never put these secrets in Vercel's `VITE_*` variables, which are exposed to
 the browser. `MOMO_MODEL_DIR` is optional if the default
 `backend/models/paysim-runtime` artifacts are included with the backend.
 
+Before inviting testers, set the required Render secrets in its dashboard and
+obtain MTN-issued sandbox test numbers for wallet enrollment. MTN API
+credentials and a callback URL are not needed while the hosted app is
+simulation-only. Verify SMTP delivery only if optional email-ownership
+verification is enabled; SMTP is not needed for MEDIUM-risk transfer
+verification. The frontend and backend must use the exact deployed origins and
+HTTPS URLs. Never send provider credentials in chat or commit them to the
+repository.
+
+Complete a privacy/legal review before a public pilot. The Ghana Data
+Protection Commission's [registration guidance](https://dpc.gov.gh/registration)
+states that data controllers and processors must register; confirm whether and
+how that applies to the pilot with the Commission or qualified counsel.
+Synthetic identity details do not remove obligations for any real email
+address, IP address, or device identifier.
+
+The pilot operator must record a close date and schedule data removal. Delete
+the hosted SQLite database no later than 30 days after that date, and account
+for Render disk snapshots and any email/provider logs or backups. Render's
+[disk documentation](https://render.com/docs/disks#disk-snapshots) says
+snapshots are retained for seven days, so if all copies must be gone by day
+30, remove the primary data by day 23 or confirm snapshot deletion timing with
+Render. Self-service account deletion removes the
+sandbox profile, security-signal history, and active MoMo sessions immediately;
+it cannot rewrite the append-only audit chain or linked transaction rows.
+
 ## MTN Disbursement API
 
 The sandbox customer flow supports sign-in to the bundled demo registry or
-direct enrollment of a new sandbox wallet. Enrollment collects a name, Ghana
-phone number, passport/Ghana Card number, email, and a demo PIN. Email is stored
-without ownership verification; the passport/ID value and PIN are stored as
-salted hashes. This prototype does not validate documents with an official
-identity provider. The sender is taken from the authenticated session; the
-transfer form asks for the recipient and amount. Wallet-to-wallet transfers
-require the wallet PIN and are sent to MTN Disbursement sandbox (`sandbox`
-target, EUR). Bank-to-wallet and wallet-to-bank flows are local simulations
-only and use a demo OTP; they do not call MTN or move money.
+direct enrollment of a new sandbox wallet. Enrollment requires acceptance of
+the sandbox privacy notice and collects a fictional name, MTN-issued sandbox
+test number, synthetic passport/Ghana Card identifier, controlled test email,
+demo PIN, and a separate six-digit security code. Do not enter real identity
+documents or another person's data.
+Email is stored without ownership verification at registration; the
+passport/ID value, PIN, and security code are stored as salted hashes. This
+prototype does not validate documents with an official identity provider.
+Customers can delete
+their sandbox profile and security-signal history in the UI. Linked
+transaction/audit records remain until the pilot database is erased, no later
+than 30 days after the pilot ends, because the audit log is append-only. The
+pilot operator must schedule and perform that database wipe, including
+applicable backups and provider logs.
+
+The sender is taken from the authenticated session; the transfer form asks for
+the recipient and amount. Wallet-to-wallet transfers require the wallet PIN.
+On the hosted simulation-only pilot, transactions update only demo balances
+and never call MTN. A separately configured local environment may use MTN
+Disbursement sandbox (`sandbox` target, EUR).
+Bank-to-wallet and wallet-to-bank flows are local simulations only and use a
+demo OTP; they do not call MTN or move money.
 
 The fraud layer learns behavioral baselines only from completed transactions.
-Device identity is a persistent browser-generated ID, IP is the address
-observed by the backend, and approximate device location is required for
-enrollment and wallet transfers. The browser asks for location permission;
-the application cannot enable it if the user or browser blocks it. Device,
-network, and rounded location observations are stored in SQLite and compared
+Device identity is a persistent browser-generated ID and IP is the address
+observed by the backend. Coarse location is optional; the browser requests it
+only after an explicit opt-in, rounds coordinates to two decimal places before
+sending them, and the backend rejects coordinates without consent. Device,
+network, and opted-in location observations are stored in SQLite and compared
 with previously trusted enrollment/successful-transfer signals. IP may identify
 a reverse proxy when deployed behind one. These signals do not provide carrier
 or SIM-swap data. Signal values are not shown in the customer UI.
-HIGH-risk transactions are blocked. MEDIUM-risk transfers require a step-up
-using either a code sent to the stored email address or the registered passport
-number. Email delivery requires backend SMTP settings (`SMTP_HOST`, `SMTP_PORT`,
-`SMTP_USER`, `SMTP_PASSWORD`, and optionally `SMTP_FROM`/`SMTP_TLS`); when it is
-unavailable, passport verification remains available for passport holders.
-Demo OTP values are not returned for live transfers. Email codes are never
-included in the developer outbox or event stream.
+HIGH-risk transactions are blocked. MEDIUM-risk transfers require the saved
+six-digit security code or, for passport profiles, the registered synthetic
+passport number. The security code is stored as a salted password hash, is
+never emailed, and is requested only after a transaction is rated MEDIUM.
+Existing self-enrolled wallets without a code can set one in the transfer
+screen after confirming their wallet PIN. Enrollment does not require email
+ownership verification. SMTP is not required for MEDIUM-risk step-up.
 
 The frontend does not impose an arbitrary amount cap. The backend enforces the
 provider environment's configured transfer limit (EUR 10,000 for this sandbox
@@ -140,17 +187,22 @@ authentication, and transfer requests use the returned Bearer token and a
 fresh UUID reference per transfer request. Run the frontend separately with
 `npm run dev` from `frontend`, then open `http://localhost:5173`. Sandbox
 credentials are separate from production and Collection credentials.
+Set `MTN_DISBURSEMENT_CALLBACK_URL` in the backend process environment to an
+operator-controlled HTTPS URL before using sandbox transfers.
 
 The sandbox launcher requests `MTN_SANDBOX_DISBURSEMENT_SUBSCRIPTION_KEY`,
 `MTN_SANDBOX_DISBURSEMENT_API_USER`, and
 `MTN_SANDBOX_DISBURSEMENT_API_KEY`. Sandbox is the backend's default when no
-environment is selected; Render and the production launcher select production
-explicitly.
+environment is selected; Render explicitly selects sandbox and the production
+launcher selects production.
 
-Transfer requests include MTN's required `X-Callback-Url` header. Set
-`MTN_DISBURSEMENT_CALLBACK_URL` to a reachable HTTPS notification endpoint.
-Sandbox defaults to a placeholder callback URL; production defaults to a
-loopback placeholder and must be configured to a reachable endpoint.
+Transfer requests include MTN's `X-Callback-Url` header, but this application
+currently reconciles results by polling and does not expose an MTN callback
+handler. Do not use a public request-inspection service for the callback URL.
+Confirm the MTN sandbox's callback requirements with the provider and use an
+operator-controlled HTTPS endpoint. The Render Blueprint leaves this variable
+unset and reports Disbursement as unconfigured until it is set. Implement and
+validate a callback handler before relying on callback notifications.
 
 Production Disbursement must be enabled for the merchant account and Ghana by
 MTN. It requires its own production Disbursement subscription key, API User ID,

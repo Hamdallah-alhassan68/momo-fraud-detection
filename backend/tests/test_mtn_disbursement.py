@@ -21,6 +21,11 @@ from services.mtn_disbursement import (
 
 class MtnDisbursementClientTests(unittest.TestCase):
     def setUp(self):
+        self.callback_url_patcher = patch.dict(
+            os.environ,
+            {"MTN_DISBURSEMENT_CALLBACK_URL": "https://callback.example.test/mtn"},
+        )
+        self.callback_url_patcher.start()
         self.requests = []
         self.token_post_calls = []
 
@@ -78,6 +83,7 @@ class MtnDisbursementClientTests(unittest.TestCase):
     def tearDown(self):
         self.http_client.close()
         self.token_post_patcher.stop()
+        self.callback_url_patcher.stop()
 
     def test_transfer_uses_disbursement_contract_and_requires_token(self):
         reference_id = str(uuid.uuid4())
@@ -106,7 +112,7 @@ class MtnDisbursementClientTests(unittest.TestCase):
         )
         self.assertEqual(
             transfer_request.headers["X-Callback-Url"],
-            "http://127.0.0.1/",
+            "https://callback.example.test/mtn",
         )
         self.assertEqual(
             transfer_request.headers["Authorization"],
@@ -198,7 +204,7 @@ class MtnDisbursementClientTests(unittest.TestCase):
         )
         self.assertEqual(
             transfer_request.headers["X-Callback-Url"],
-            "https://webhook.site/",
+            "https://callback.example.test/mtn",
         )
         self.assertEqual(
             transfer_request.headers["Authorization"],
@@ -274,7 +280,7 @@ class MtnDisbursementClientTests(unittest.TestCase):
             )
             self.assertEqual(
                 request.headers["X-Callback-Url"],
-                "https://webhook.site/",
+                "https://callback.example.test/mtn",
             )
             self.assertEqual(
                 request.headers["X-Target-Environment"],
@@ -292,6 +298,7 @@ class MtnDisbursementClientTests(unittest.TestCase):
             "MTN_SANDBOX_DISBURSEMENT_SUBSCRIPTION_KEY": "sandbox-subscription",
             "MTN_SANDBOX_DISBURSEMENT_API_USER": "sandbox-user",
             "MTN_SANDBOX_DISBURSEMENT_API_KEY": "sandbox-key",
+            "MTN_DISBURSEMENT_CALLBACK_URL": "https://callback.example.test/mtn",
             "MOMO_ADMIN_TOKEN": "test-admin-token-with-more-than-32-characters",
         }
         with patch.dict(os.environ, variables, clear=False):
@@ -324,11 +331,32 @@ class MtnDisbursementClientTests(unittest.TestCase):
             "https://example.test/mtn/callback",
         )
 
+    def test_sandbox_requires_an_operator_controlled_callback_url(self):
+        variables = {
+            "MTN_DISBURSEMENT_ENVIRONMENT": "sandbox",
+            "MTN_SANDBOX_DISBURSEMENT_SUBSCRIPTION_KEY": "sandbox-subscription",
+            "MTN_SANDBOX_DISBURSEMENT_API_USER": "sandbox-user",
+            "MTN_SANDBOX_DISBURSEMENT_API_KEY": "sandbox-key",
+            "MOMO_ADMIN_TOKEN": "test-admin-token-with-more-than-32-characters",
+        }
+        with patch.dict(os.environ, variables, clear=True):
+            status = get_configuration_status()
+            self.assertFalse(status["configured"])
+            self.assertEqual(
+                status["missing_variables"],
+                ["MTN_DISBURSEMENT_CALLBACK_URL"],
+            )
+            with self.assertRaisesRegex(
+                MtnDisbursementError, "MTN_DISBURSEMENT_CALLBACK_URL"
+            ):
+                MtnDisbursementClient.from_environment()
+
     def test_sandbox_is_the_default_environment(self):
         variables = {
             "MTN_SANDBOX_DISBURSEMENT_SUBSCRIPTION_KEY": "sandbox-subscription",
             "MTN_SANDBOX_DISBURSEMENT_API_USER": "sandbox-user",
             "MTN_SANDBOX_DISBURSEMENT_API_KEY": "sandbox-key",
+            "MTN_DISBURSEMENT_CALLBACK_URL": "https://callback.example.test/mtn",
             "MOMO_ADMIN_TOKEN": "test-admin-token-with-more-than-32-characters",
         }
         with patch.dict(os.environ, variables, clear=True):
@@ -478,6 +506,50 @@ class MtnDisbursementRouteTests(unittest.TestCase):
     def tearDown(self):
         self.client.close()
         self.admin_token_patcher.stop()
+
+    def test_simulation_only_blocks_all_live_mtn_operations(self):
+        with patch.dict(os.environ, {"MOMO_SIMULATION_ONLY": "true"}), patch(
+            "app.get_mtn_collection_client"
+        ) as collection_client, patch(
+            "app.get_mtn_disbursement_client"
+        ) as disbursement_client:
+            collection_request = self.client.post(
+                "/api/momo/mtn/collection/request-to-pay",
+                headers=self.headers,
+                json={
+                    "production_confirmed": True,
+                    "amount": "1.00",
+                    "payer_msisdn": "233241234567",
+                },
+            )
+            collection_status = self.client.get(
+                "/api/momo/mtn/collection/request-to-pay/test-reference",
+                headers=self.headers,
+            )
+            disbursement_request = self.client.post(
+                "/api/momo/mtn/disbursement/transfer",
+                headers=self.headers,
+                json={
+                    "production_confirmed": True,
+                    "amount": "1.00",
+                    "recipient_msisdn": "233241234567",
+                },
+            )
+            disbursement_status = self.client.get(
+                "/api/momo/mtn/disbursement/transfer/test-reference",
+                headers=self.headers,
+            )
+
+        for response in (
+            collection_request,
+            collection_status,
+            disbursement_request,
+            disbursement_status,
+        ):
+            self.assertEqual(response.status_code, 403, response.text)
+            self.assertIn("simulation-only", response.json()["detail"])
+        collection_client.assert_not_called()
+        disbursement_client.assert_not_called()
 
     def test_simulation_injects_requested_signals_without_sending_transfer(self):
         baseline = {
@@ -781,6 +853,7 @@ class SandboxCustomerEmailVerificationTests(unittest.TestCase):
         self.app_module._EMAIL_VERIFICATION_CHALLENGES.clear()
 
     def test_customer_email_requires_and_completes_an_ownership_challenge(self):
+        self.subscriber["email"] = "customer@example.com"
         with patch.dict(
             os.environ, {"MTN_DISBURSEMENT_ENVIRONMENT": "sandbox"}, clear=False
         ), patch("app.find_subscriber", return_value=self.subscriber), patch(
@@ -874,6 +947,346 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
         database.DATABASE_PATH = self.original_database_path
         self.temp_dir.cleanup()
 
+    def test_registration_requires_notice_consent_and_can_skip_location(self):
+        registration = {
+            "phone_number": self.phone,
+            "full_name": "Fictional Test Customer",
+            "id_type": "PASSPORT",
+            "id_number": "TEST-ID-84521",
+            "email": "controlled-test@example.test",
+            "pin": "4826",
+            "security_code": "816204",
+            "device_id": "browser-device-1",
+        }
+        with patch.dict(
+            os.environ, {"MTN_DISBURSEMENT_ENVIRONMENT": "sandbox"}, clear=False
+        ):
+            missing_consent = self.client.post(
+                "/api/momo/customer/register",
+                json=registration,
+            )
+            self.assertEqual(missing_consent.status_code, 400)
+            self.assertIsNone(database.get_sandbox_customer_profile(self.phone))
+
+            accepted = self.client.post(
+                "/api/momo/customer/register",
+                json={**registration, "privacy_notice_accepted": True},
+            )
+
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        profile = database.get_sandbox_customer_profile(self.phone)
+        self.assertEqual(profile["privacy_notice_version"], "2026-11")
+        self.assertTrue(profile["privacy_consent_at"])
+        self.assertNotEqual(profile["step_up_code_hash"], "816204")
+        self.assertTrue(
+            auth.verify_password("816204", profile["step_up_code_hash"])
+        )
+        self.assertTrue(accepted.json()["customer"]["has_security_code"])
+        self.assertNotIn("security_code", accepted.json()["customer"])
+        self.assertNotIn("step_up_code_hash", accepted.json()["customer"])
+        history = database.get_customer_security_history(self.phone)
+        self.assertEqual(history["locations"], [])
+        connection = database.get_connection()
+        try:
+            enrollment_consent = connection.execute(
+                """
+                SELECT location_consent
+                FROM customer_security_signals
+                WHERE customer_ref = ? AND event_type = 'ENROLLMENT'
+                """,
+                (self.phone,),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(enrollment_consent["location_consent"], 0)
+
+    def test_simulation_only_wallet_transfer_never_contacts_mtn(self):
+        assessment = {
+            "risk_score": 0.1,
+            "risk_level": "LOW",
+            "decision": "APPROVE",
+            "isolation_forest_score": 0.1,
+            "rule_score": 0,
+            "reasons": [],
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "MTN_DISBURSEMENT_ENVIRONMENT": "sandbox",
+                "MOMO_SIMULATION_ONLY": "true",
+            },
+            clear=False,
+        ), patch(
+            "app.get_mtn_disbursement_client"
+        ) as get_client, patch.object(
+            self.momo_simulator.fraud_detector,
+            "assess_transaction",
+            return_value=assessment,
+        ):
+            created = self.client.post(
+                "/api/momo/customer/register",
+                json={
+                    "phone_number": self.phone,
+                    "full_name": "Fictional Test Customer",
+                    "id_type": "PASSPORT",
+                    "id_number": "TEST-ID-84521",
+                    "email": "controlled-test@example.test",
+                    "pin": "4826",
+                    "security_code": "816204",
+                    "device_id": "browser-device-1",
+                    "privacy_notice_accepted": True,
+                },
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            self.assertEqual(
+                created.json()["customer"]["transfer_mode"], "SIMULATION_ONLY"
+            )
+            headers = {"Authorization": f"Bearer {created.json()['token']}"}
+            started = self.client.post(
+                "/api/momo/transaction/initiate",
+                headers=headers,
+                json={
+                    "transaction_type": "TRANSFER",
+                    "amount": 1,
+                    "recipient": "0242002002",
+                    "device_id": "browser-device-1",
+                    "live_mtn": True,
+                },
+            )
+            self.assertEqual(started.status_code, 200, started.text)
+            self.assertFalse(started.json()["live_mtn"])
+            self.assertNotIn("demo_hint", started.json())
+            verified = self.client.post(
+                "/api/momo/transaction/verify",
+                headers=headers,
+                json={
+                    "session_id": started.json()["session_id"],
+                    "code": "4826",
+                },
+            )
+
+        self.assertEqual(verified.status_code, 200, verified.text)
+        self.assertEqual(verified.json()["status"], "APPROVED")
+        self.assertFalse(verified.json()["live_mtn"])
+        get_client.assert_not_called()
+
+    def test_existing_wallet_can_set_code_after_wallet_pin_confirmation(self):
+        database.create_sandbox_customer_profile(
+            phone_number=self.phone,
+            customer_ref=self.phone,
+            full_name="Fictional Test Customer",
+            id_type="PASSPORT",
+            id_hash=auth.hash_password("TEST-ID-84521"),
+            email="controlled-test@example.test",
+            pin_hash=auth.hash_password("4826"),
+        )
+        token = auth.create_access_token(
+            user_id=0,
+            username=self.phone,
+            role="momo_customer",
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+
+        current = self.client.get(
+            "/api/momo/customer/me",
+            headers=headers,
+        )
+        self.assertEqual(current.status_code, 200, current.text)
+        self.assertFalse(current.json()["has_security_code"])
+        self.assertTrue(current.json()["security_code_setup_available"])
+
+        wrong_pin = self.client.post(
+            "/api/momo/customer/security-code",
+            headers=headers,
+            json={"wallet_pin": "0000", "security_code": "123456"},
+        )
+        invalid_code = self.client.post(
+            "/api/momo/customer/security-code",
+            headers=headers,
+            json={"wallet_pin": "4826", "security_code": "12345"},
+        )
+        self.assertEqual(wrong_pin.status_code, 401, wrong_pin.text)
+        self.assertEqual(invalid_code.status_code, 400, invalid_code.text)
+
+        saved = self.client.post(
+            "/api/momo/customer/security-code",
+            headers=headers,
+            json={"wallet_pin": "4826", "security_code": "123456"},
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        profile = database.get_sandbox_customer_profile(self.phone)
+        self.assertTrue(
+            auth.verify_password("123456", profile["step_up_code_hash"])
+        )
+        self.assertNotEqual(profile["step_up_code_hash"], "123456")
+        customer = self.momo_simulator._ensure_customer(self.phone)
+        self.assertEqual(
+            customer["step_up_code_hash"], profile["step_up_code_hash"]
+        )
+
+    def test_account_deletion_removes_profile_signals_and_sessions(self):
+        with patch.dict(
+            os.environ, {"MTN_DISBURSEMENT_ENVIRONMENT": "sandbox"}, clear=False
+        ):
+            created = self.client.post(
+                "/api/momo/customer/register",
+                json={
+                    "phone_number": self.phone,
+                    "full_name": "Fictional Test Customer",
+                    "id_type": "PASSPORT",
+                    "id_number": "TEST-ID-84521",
+                    "email": "controlled-test@example.test",
+                    "pin": "4826",
+                    "security_code": "816204",
+                    "device_id": "browser-device-1",
+                    "privacy_notice_accepted": True,
+                },
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+
+            database.create_momo_session(
+                session_id="delete-test-session",
+                customer_ref=self.phone,
+                transaction_type="TRANSFER",
+                amount=1,
+                recipient="0242002002",
+                verification_method="PIN",
+                otp_code=None,
+                device_id="browser-device-1",
+                ip_address="192.0.2.1",
+            )
+            transaction_id = database.create_transaction(
+                {
+                    "transaction_reference": "delete-test-transaction",
+                    "amount": 1,
+                    "transaction_type": "TRANSFER",
+                    "origin_account": self.phone,
+                    "destination_account": "0242002002",
+                }
+            )
+            database.create_audit_log(
+                transaction_id,
+                "TEST_TRANSACTION",
+                self.phone,
+                "Synthetic pilot transaction",
+            )
+
+            headers = {"Authorization": f"Bearer {created.json()['token']}"}
+            deleted = self.client.delete(
+                "/api/momo/customer/me",
+                headers=headers,
+            )
+
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertIsNone(database.get_sandbox_customer_profile(self.phone))
+        connection = database.get_connection()
+        try:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM customer_security_signals WHERE customer_ref = ?",
+                    (self.phone,),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM momo_sessions WHERE customer_ref = ?",
+                    (self.phone,),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM transactions WHERE origin_account = ?",
+                    (self.phone,),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM audit_logs WHERE transaction_id = ?",
+                    (transaction_id,),
+                ).fetchone()[0],
+                1,
+            )
+        finally:
+            connection.close()
+
+    def test_missing_mtn_configuration_is_reported_as_not_submitted(self):
+        database.create_momo_session(
+            session_id="not-submitted-session",
+            customer_ref=self.phone,
+            transaction_type="TRANSFER",
+            amount=1,
+            recipient="0242002002",
+            verification_method="PIN",
+            otp_code=None,
+            device_id="browser-device-1",
+            ip_address="192.0.2.1",
+            live_mtn=1,
+        )
+        assessment = {
+            "risk_score": 0.45,
+            "risk_level": "MEDIUM",
+            "decision": "STEP_UP_VERIFIED",
+            "isolation_forest_score": 0.2,
+            "rule_score": 0.3,
+            "reasons": ["New recipient"],
+        }
+        transaction = {
+            "transaction_reference": "MOMO-NOT-SUBMITTED",
+            "amount": 1,
+            "transaction_type": "TRANSFER",
+            "origin_account": self.phone,
+            "destination_account": "0242002002",
+            "risk_signals": {"recipient_novel": True},
+            "live_mtn": True,
+        }
+        configuration_error = MtnDisbursementError(
+            "MTN sandbox Disbursement is not configured. Missing backend "
+            "environment variables: MTN_DISBURSEMENT_CALLBACK_URL.",
+            status_code=503,
+        )
+        with patch(
+            "services.momo_simulator.get_mtn_disbursement_client",
+            side_effect=configuration_error,
+        ):
+            result = self.momo_simulator._apply_outcome(
+                session_id="not-submitted-session",
+                risk_level="MEDIUM",
+                assessment=assessment,
+                reference="MOMO-NOT-SUBMITTED",
+                transaction=transaction,
+                signals={"recipient_novel": True},
+                amount=1,
+                dest_ref="0242002002",
+                origin_ref=self.phone,
+                origin_new=10000,
+                dest_new=10001,
+                ip_address="192.0.2.1",
+                device_id="browser-device-1",
+                live_mtn=True,
+                customer={"name": "Fictional Test Customer"},
+            )
+
+        self.assertEqual(result["status"], "NOT_SUBMITTED")
+        self.assertIn("No money was moved", result["message"])
+        session = database.get_momo_session("not-submitted-session")
+        self.assertEqual(session["status"], "NOT_SUBMITTED")
+        connection = database.get_connection()
+        try:
+            row = connection.execute(
+                """
+                SELECT status, mtn_reference_id
+                FROM transactions
+                WHERE transaction_reference = 'MOMO-NOT-SUBMITTED'
+                """
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(row["status"], "NOT_SUBMITTED")
+        self.assertIsNone(row["mtn_reference_id"])
+
     def test_registration_stores_email_without_verification_and_creates_signin(self):
         with patch.dict(
             os.environ, {"MTN_DISBURSEMENT_ENVIRONMENT": "sandbox"}, clear=False
@@ -889,7 +1302,10 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
                     "id_number": "P-TEST-84521",
                     "email": "customer@example.test",
                     "pin": "4826",
+                    "security_code": "816204",
                     "device_id": "browser-device-1",
+                    "privacy_notice_accepted": True,
+                    "location_consent": True,
                     "location_latitude": 5.60,
                     "location_longitude": -0.18,
                 },
@@ -913,6 +1329,7 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
                 "phone_number": "+233 26 123 4567",
                 "pin": "4826",
                 "device_id": "browser-device-1",
+                "location_consent": True,
                 "location_latitude": 5.60,
                 "location_longitude": -0.18,
             },
@@ -923,7 +1340,7 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
         self.assertIn("browser-device-1", history["device_ids"])
         self.assertIn("5.6", {str(location[0]) for location in history["locations"]})
 
-    def test_transaction_requires_location_and_persists_unshown_security_signals(self):
+    def test_transaction_location_is_optional_and_requires_explicit_consent(self):
         database.create_sandbox_customer_profile(
             phone_number=self.phone,
             customer_ref=self.phone,
@@ -942,22 +1359,7 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
         with patch.dict(
             os.environ, {"MTN_DISBURSEMENT_ENVIRONMENT": "sandbox"}, clear=False
         ), patch("app.momo_initiate") as initiate:
-            missing_location = self.client.post(
-                "/api/momo/transaction/initiate",
-                headers=headers,
-                json={
-                    "transaction_type": "TRANSFER",
-                    "amount": 1,
-                    "recipient": "0242002002",
-                    "device_id": "browser-device-2",
-                    "live_mtn": True,
-                },
-            )
-            self.assertEqual(missing_location.status_code, 428)
-            initiate.assert_not_called()
-
-            initiate.return_value = {"session_id": "test-session"}
-            started = self.client.post(
+            no_consent_with_coordinates = self.client.post(
                 "/api/momo/transaction/initiate",
                 headers=headers,
                 json={
@@ -970,26 +1372,71 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
                     "live_mtn": True,
                 },
             )
+            self.assertEqual(no_consent_with_coordinates.status_code, 400)
+            initiate.assert_not_called()
 
-        self.assertEqual(started.status_code, 200, started.text)
+            initiate.side_effect = [
+                {"session_id": "test-session-no-location"},
+                {"session_id": "test-session-with-location"},
+            ]
+            started_without_location = self.client.post(
+                "/api/momo/transaction/initiate",
+                headers=headers,
+                json={
+                    "transaction_type": "TRANSFER",
+                    "amount": 1,
+                    "recipient": "0242002002",
+                    "device_id": "browser-device-2",
+                    "live_mtn": True,
+                },
+            )
+            started_with_location = self.client.post(
+                "/api/momo/transaction/initiate",
+                headers=headers,
+                json={
+                    "transaction_type": "TRANSFER",
+                    "amount": 1,
+                    "recipient": "0242002002",
+                    "device_id": "browser-device-2",
+                    "location_consent": True,
+                    "location_latitude": 5.61,
+                    "location_longitude": -0.19,
+                    "live_mtn": True,
+                },
+            )
+
+        self.assertEqual(started_without_location.status_code, 200, started_without_location.text)
+        self.assertEqual(started_with_location.status_code, 200, started_with_location.text)
         connection = database.get_connection()
         try:
-            signal = connection.execute(
+            no_location_signal = connection.execute(
+                """
+                SELECT location_latitude, location_longitude, location_consent
+                FROM customer_security_signals
+                WHERE session_id = 'test-session-no-location'
+                """
+            ).fetchone()
+            location_signal = connection.execute(
                 """
                 SELECT event_type, device_id, ip_address,
-                       location_latitude, location_longitude, trusted
+                       location_latitude, location_longitude, location_consent,
+                       trusted
                 FROM customer_security_signals
-                WHERE session_id = 'test-session'
+                WHERE session_id = 'test-session-with-location'
                 """
             ).fetchone()
         finally:
             connection.close()
-        self.assertEqual(signal["device_id"], "browser-device-2")
-        self.assertEqual(signal["location_latitude"], 5.61)
-        self.assertEqual(signal["location_longitude"], -0.19)
-        self.assertFalse(signal["trusted"])
+        self.assertIsNone(no_location_signal["location_latitude"])
+        self.assertIsNone(no_location_signal["location_longitude"])
+        self.assertEqual(no_location_signal["location_consent"], 0)
+        self.assertEqual(location_signal["device_id"], "browser-device-2")
+        self.assertEqual(location_signal["location_latitude"], 5.61)
+        self.assertEqual(location_signal["location_longitude"], -0.19)
+        self.assertEqual(location_signal["location_consent"], 1)
+        self.assertFalse(location_signal["trusted"])
 
-    def test_registered_wallet_pin_authorizes_transaction_using_saved_email(self):
+    def test_registered_wallet_pin_authorizes_with_saved_security_code(self):
         with patch.dict(
             os.environ, {"MTN_DISBURSEMENT_ENVIRONMENT": "sandbox"}, clear=False
         ), patch(
@@ -1005,7 +1452,10 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
                     "id_number": "P-TEST-84521",
                     "email": "customer@example.test",
                     "pin": "4826",
+                    "security_code": "816204",
                     "device_id": "browser-device-1",
+                    "privacy_notice_accepted": True,
+                    "location_consent": True,
                     "location_latitude": 5.60,
                     "location_longitude": -0.18,
                 },
@@ -1020,6 +1470,7 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
                     "amount": 1,
                     "recipient": "0242002002",
                     "device_id": "browser-device-1",
+                    "location_consent": True,
                     "location_latitude": 5.60,
                     "location_longitude": -0.18,
                     "live_mtn": True,
@@ -1038,32 +1489,38 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
         self.assertEqual(verified.status_code, 200, verified.text)
         self.assertEqual(verified.json()["status"], "AUTHORIZED")
         self.assertEqual(
-            resolve_outcome.call_args.kwargs["step_up_email"],
-            "customer@example.test",
+            resolve_outcome.call_args.kwargs["customer"]["step_up_code_hash"],
+            database.get_sandbox_customer_profile(self.phone)[
+                "step_up_code_hash"
+            ],
         )
 
 
 class StepUpCredentialTests(unittest.TestCase):
-    def test_passport_or_email_code_can_authenticate_step_up(self):
+    def test_passport_or_saved_security_code_can_authenticate_step_up(self):
         from services import momo_simulator
 
         session = {
             "status": "STEP_UP",
             "customer_ref": "0241001001",
             "live_mtn": False,
-            "otp_code": "123456",
         }
         passport_customer = {
             "id_type": "PASSPORT",
             "id_hash": auth.hash_password("PTEST84521"),
+            "step_up_code_hash": auth.hash_password("654321"),
         }
         momo_simulator._verify_step_up_credential(
             passport_customer, session, "P-TEST-84521", "PASSPORT"
         )
         momo_simulator._verify_step_up_credential(
-            passport_customer, session, "123456", "EMAIL"
+            passport_customer, session, "654321", "SECURITY_CODE"
         )
 
+        with self.assertRaisesRegex(ValueError, "Incorrect security code"):
+            momo_simulator._verify_step_up_credential(
+                passport_customer, session, "000000", "SECURITY_CODE"
+            )
         with self.assertRaisesRegex(ValueError, "Incorrect passport number"):
             momo_simulator._verify_step_up_credential(
                 passport_customer, session, "wrong", "PASSPORT"

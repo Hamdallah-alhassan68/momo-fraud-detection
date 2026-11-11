@@ -651,6 +651,28 @@
   border-color: #fde68a;
 }
 
+.pilot-consent-control {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.pilot-consent-control input {
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+}
+
+.account-session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.text-button.account-delete-button {
+  color: #b91c1c;
+}
+
 .text-button {
   align-self: flex-start;
   padding: 4px 0;
@@ -1034,6 +1056,50 @@
   padding-left: 18px;
   font-size: 0.75rem;
   color: #64748b;
+}
+
+.security-code-setup,
+.stepup-code-unavailable {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  color: #1e3a8a;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.security-code-setup h4,
+.security-code-setup p {
+  margin: 0;
+}
+
+.security-code-setup h4 {
+  font-size: 1rem;
+}
+
+.security-code-setup .security-code-setup-error {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.security-code-setup .security-code-setup-message {
+  color: #166534;
+}
+
+.stepup-code-unavailable {
+  display: block;
+}
+
+.stepup-code-unavailable strong {
+  font-weight: 800;
+}
+
+.security-code-setup .transaction-form {
+  padding: 0;
 }
 
 .challenge-mode-tabs {

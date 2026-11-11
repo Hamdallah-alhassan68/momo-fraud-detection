@@ -147,6 +147,12 @@ export default function MTNDisbursement() {
   const [customerView, setCustomerView] = useState("signin");
   const [loginNumber, setLoginNumber] = useState("");
   const [loginPin, setLoginPin] = useState("");
+  const [securityCodeConfirmation, setSecurityCodeConfirmation] = useState("");
+  const [securitySetupPin, setSecuritySetupPin] = useState("");
+  const [securitySetupCode, setSecuritySetupCode] = useState("");
+  const [securitySetupConfirmation, setSecuritySetupConfirmation] = useState("");
+  const [securitySetupMessage, setSecuritySetupMessage] = useState("");
+  const [securitySetupError, setSecuritySetupError] = useState("");
   const [registration, setRegistration] = useState({
     phone_number: "",
     full_name: "",
@@ -154,7 +160,11 @@ export default function MTNDisbursement() {
     id_number: "",
     email: "",
     pin: "",
+    security_code: "",
   });
+  const [privacyNoticeAccepted, setPrivacyNoticeAccepted] = useState(false);
+  const [shareCoarseLocation, setShareCoarseLocation] = useState(false);
+  const [accountNotice, setAccountNotice] = useState("");
   const [senderNumber, setSenderNumber] = useState("");
   const [recipientNumber, setRecipientNumber] = useState("");
   const [amount, setAmount] = useState("5.00");
@@ -176,7 +186,7 @@ export default function MTNDisbursement() {
   const [session, setSession] = useState(null);
   const [authPin, setAuthPin] = useState("");
   const [stepUpInput, setStepUpInput] = useState("");
-  const [stepUpMethod, setStepUpMethod] = useState("EMAIL");
+  const [stepUpMethod, setStepUpMethod] = useState("SECURITY_CODE");
   const [stepUpChallenge, setStepUpChallenge] = useState(null);
   const [receipt, setReceipt] = useState(null);
 
@@ -241,7 +251,7 @@ export default function MTNDisbursement() {
     return () => clearTimeout(timer);
   }, [recipientNumber]);
 
-  // Automatic Device, IP, and Location Detection
+  // Check location permission state without requesting access.
   const detectClientTelemetry = useCallback(async () => {
     if (!navigator.permissions?.query) return;
     try {
@@ -343,15 +353,6 @@ export default function MTNDisbursement() {
     setLoading(true);
     setError("");
     try {
-      const location =
-        transactionType === "TRANSFER"
-          ? await ensureCurrentLocation()
-          : telemetry.gps_coordinates;
-      if (transactionType === "TRANSFER" && !location) {
-        throw new Error(
-          "Location is required. Allow location access in your browser and try again.",
-        );
-      }
       const response = await fetch(`${API_URL}/api/momo/customer/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -359,8 +360,6 @@ export default function MTNDisbursement() {
           phone_number: loginNumber,
           pin: loginPin,
           device_id: getBrowserDeviceId(),
-          location_latitude: location?.latitude,
-          location_longitude: location?.longitude,
         }),
       });
       const data = await response.json();
@@ -378,17 +377,81 @@ export default function MTNDisbursement() {
     }
   }
 
+  async function handleSetSecurityCode(event) {
+    event.preventDefault();
+    setSecuritySetupError("");
+    setSecuritySetupMessage("");
+    if (!/^\d{6}$/.test(securitySetupCode)) {
+      setSecuritySetupError("Choose a six-digit security code.");
+      return;
+    }
+    if (securitySetupCode !== securitySetupConfirmation) {
+      setSecuritySetupError("The security codes do not match.");
+      return;
+    }
+    if (securitySetupCode === securitySetupPin) {
+      setSecuritySetupError("Choose a code different from your wallet PIN.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const response = await fetch(
+        `${API_URL}/api/momo/customer/security-code`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${customerToken}`,
+          },
+          body: JSON.stringify({
+            wallet_pin: securitySetupPin,
+            security_code: securitySetupCode,
+          }),
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Could not save your security code.");
+      }
+      setCustomerAccount((current) =>
+        current ? { ...current, has_security_code: true } : current,
+      );
+      setSecuritySetupPin("");
+      setSecuritySetupCode("");
+      setSecuritySetupConfirmation("");
+      setSecuritySetupMessage(
+        "Security code saved. It will only be requested if a transaction is rated MEDIUM risk.",
+      );
+    } catch (setupError) {
+      setSecuritySetupError(
+        setupError.message || "Could not save your security code.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleRegistrationSubmit(event) {
     event.preventDefault();
+    if (!/^\d{6}$/.test(registration.security_code)) {
+      setError("Choose a six-digit MEDIUM-risk security code.");
+      return;
+    }
+    if (registration.security_code !== securityCodeConfirmation) {
+      setError("The MEDIUM-risk security codes do not match.");
+      return;
+    }
+    if (registration.security_code === registration.pin) {
+      setError("Choose a security code that is different from your wallet PIN.");
+      return;
+    }
     setLoading(true);
     setError("");
+    setAccountNotice("");
     try {
-      const location = await ensureCurrentLocation();
-      if (!location) {
-        throw new Error(
-          "Location is required. Allow location access in your browser and try again.",
-        );
-      }
+      const location = shareCoarseLocation
+        ? await ensureCurrentLocation()
+        : null;
       const response = await fetch(
         `${API_URL}/api/momo/customer/register`,
         {
@@ -396,9 +459,13 @@ export default function MTNDisbursement() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             ...registration,
+            privacy_notice_accepted: privacyNoticeAccepted,
+            location_consent: shareCoarseLocation,
             device_id: getBrowserDeviceId(),
-            location_latitude: location.latitude,
-            location_longitude: location.longitude,
+            ...(location && {
+              location_latitude: location.latitude,
+              location_longitude: location.longitude,
+            }),
           }),
         },
       );
@@ -415,7 +482,11 @@ export default function MTNDisbursement() {
         id_number: "",
         email: "",
         pin: "",
+        security_code: "",
       });
+      setSecurityCodeConfirmation("");
+      setPrivacyNoticeAccepted(false);
+      setShareCoarseLocation(false);
       setCustomerView("signin");
     } catch (registrationError) {
       setError(registrationError.message || "Could not create sandbox wallet.");
@@ -431,7 +502,43 @@ export default function MTNDisbursement() {
     setSenderNumber("");
     setSession(null);
     setStep("form");
+    setPrivacyNoticeAccepted(false);
+    setShareCoarseLocation(false);
     setError("");
+  }
+
+  async function deleteSandboxAccount() {
+    if (
+      !window.confirm(
+        "Delete this sandbox profile and its security signals? Historical transaction and audit records remain until the pilot data wipe.",
+      )
+    ) {
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(`${API_URL}/api/momo/customer/me`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${customerToken}` },
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Could not delete the sandbox account.");
+      }
+      sessionStorage.removeItem("momo-sandbox-customer-token");
+      setCustomerToken("");
+      setCustomerAccount(null);
+      setSenderNumber("");
+      setSession(null);
+      setStep("form");
+      setShareCoarseLocation(false);
+      setAccountNotice(data.message);
+    } catch (deleteError) {
+      setError(deleteError.message || "Could not delete the sandbox account.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   // Step 1: Proceed to PIN Authorization
@@ -455,22 +562,24 @@ export default function MTNDisbursement() {
 
     setLoading(true);
     try {
-      const location = await ensureCurrentLocation();
-      if (!location) {
-        throw new Error(
-          "Location is required for a transfer. Allow location access in browser settings and retry.",
-        );
-      }
+      const location = shareCoarseLocation
+        ? await ensureCurrentLocation()
+        : null;
       const payload = {
         transaction_type: transactionType,
         amount: parsedAmount,
         recipient: recipientNumber.trim(),
-        location_latitude: location.latitude,
-        location_longitude: location.longitude,
+        location_consent: shareCoarseLocation,
         device_id: getBrowserDeviceId(),
         scenario: "NORMAL",
-        live_mtn: transactionType === "TRANSFER",
+        live_mtn:
+          transactionType === "TRANSFER" &&
+          customerAccount.transfer_mode !== "SIMULATION_ONLY",
       };
+      if (location) {
+        payload.location_latitude = location.latitude;
+        payload.location_longitude = location.longitude;
+      }
 
       const res = await fetch(`${API_URL}/api/momo/transaction/initiate`, {
         method: "POST",
@@ -529,7 +638,9 @@ export default function MTNDisbursement() {
       if (data.status === "STEP_UP_REQUIRED") {
         setStepUpChallenge(data);
         setStepUpInput("");
-        setStepUpMethod(data.email_available ? "EMAIL" : "PASSPORT");
+        setStepUpMethod(
+          data.security_code_available ? "SECURITY_CODE" : "PASSPORT",
+        );
         setStep("stepup");
       } else {
         setReceipt(data);
@@ -556,11 +667,11 @@ export default function MTNDisbursement() {
     }
   }
 
-  // Step 3: Complete Step-Up Challenge (Email OTP or National ID)
+  // Step 3: Complete MEDIUM-risk step-up challenge.
   async function handleVerifyStepUp(e) {
     if (e) e.preventDefault();
     if (!stepUpInput.trim()) {
-      setError("Please enter the verification code or ID document number.");
+      setError("Enter your security code or registered passport number.");
       return;
     }
 
@@ -601,7 +712,7 @@ export default function MTNDisbursement() {
         ]);
       }
     } catch (err) {
-      setError(err.message || "Invalid OTP or ID document. Verification rejected.");
+      setError(err.message || "Security verification failed.");
     } finally {
       setLoading(false);
     }
@@ -720,7 +831,11 @@ export default function MTNDisbursement() {
                     {senderNumber || "Sign in required"}
                   </h2>
                   <span className="account-status-tag">
-                    {customerAccount ? "Sandbox demo wallet" : "No wallet signed in"}
+                    {customerAccount
+                      ? customerAccount.transfer_mode === "SIMULATION_ONLY"
+                        ? "Simulation-only test wallet"
+                        : "Sandbox demo wallet"
+                      : "No wallet signed in"}
                   </span>
                 </div>
                 <div className="momo-pay-badge">
@@ -952,6 +1067,105 @@ export default function MTNDisbursement() {
                 <span>{error}</span>
               </div>
             )}
+            {accountNotice && (
+              <div className="privacy-signal-note" role="status">
+                {accountNotice}
+              </div>
+            )}
+            {customerAccount?.transfer_mode === "SIMULATION_ONLY" && (
+              <div className="privacy-signal-note" role="status">
+                Simulation-only pilot: transactions update demo balances only.
+                No request is sent to MTN and no money moves.
+              </div>
+            )}
+
+            {step === "form" &&
+              customerAccount?.security_code_setup_available &&
+              !customerAccount.has_security_code && (
+              <section className="security-code-setup">
+                <h4>Set a MEDIUM-risk security code</h4>
+                <p>
+                  This existing wallet has no saved code yet. Confirm your
+                  wallet PIN and choose a separate six-digit code. It will
+                  only be requested when a transaction is rated MEDIUM risk.
+                </p>
+                {securitySetupMessage && (
+                  <p className="security-code-setup-message" role="status">
+                    {securitySetupMessage}
+                  </p>
+                )}
+                {securitySetupError && (
+                  <p className="security-code-setup-error" role="alert">
+                    {securitySetupError}
+                  </p>
+                )}
+                <form onSubmit={handleSetSecurityCode} className="transaction-form">
+                  <div className="field-block">
+                    <label htmlFor="security-setup-pin" className="field-label">
+                      Confirm wallet PIN
+                    </label>
+                    <input
+                      id="security-setup-pin"
+                      type="password"
+                      required
+                      inputMode="numeric"
+                      autoComplete="current-password"
+                      maxLength={4}
+                      value={securitySetupPin}
+                      onChange={(event) =>
+                        setSecuritySetupPin(
+                          event.target.value.replace(/\D/g, "").slice(0, 4),
+                        )
+                      }
+                      className="standard-input"
+                    />
+                  </div>
+                  <div className="field-block">
+                    <label htmlFor="security-setup-code" className="field-label">
+                      New six-digit security code
+                    </label>
+                    <input
+                      id="security-setup-code"
+                      type="password"
+                      required
+                      inputMode="numeric"
+                      autoComplete="new-password"
+                      maxLength={6}
+                      value={securitySetupCode}
+                      onChange={(event) =>
+                        setSecuritySetupCode(
+                          event.target.value.replace(/\D/g, "").slice(0, 6),
+                        )
+                      }
+                      className="standard-input"
+                    />
+                    <input
+                      aria-label="Confirm new six-digit security code"
+                      type="password"
+                      required
+                      inputMode="numeric"
+                      autoComplete="new-password"
+                      maxLength={6}
+                      value={securitySetupConfirmation}
+                      onChange={(event) =>
+                        setSecuritySetupConfirmation(
+                          event.target.value.replace(/\D/g, "").slice(0, 6),
+                        )
+                      }
+                      placeholder="Confirm security code"
+                      className="standard-input"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="primary-action-btn"
+                    disabled={loading}
+                  >
+                    {loading ? "Saving…" : "Save security code"}
+                  </button>
+                </form>
+              </section>
+            )}
 
             {/* STEP 1: TRANSACTION DETAILS FORM */}
             {step === "form" && !customerAccount && (
@@ -974,11 +1188,17 @@ export default function MTNDisbursement() {
                 </div>
 
                 <div className="privacy-signal-note">
-                  Location is required for account enrollment and transfers.
-                  Device, network IP, and approximate location signals are
-                  recorded for fraud detection and are not displayed here.
-                  Passport/ID numbers are stored as salted verification hashes;
-                  this demo does not validate documents with an official source.
+                  Sandbox only. Use a fictional name and identity number, and
+                  an MTN-provided test wallet number. Never enter a real
+                  passport, Ghana Card, or another person’s data. We store the
+                  test profile, email, device ID, and server-observed IP;
+                  identity numbers and PINs are salted hashes. Location is
+                  optional and, if you opt in, is rounded to about 1 km.
+                  Profile and security-signal deletion is immediate; linked
+                  transaction/audit records remain until the operator-managed
+                  pilot data wipe, no later than 30 days after the pilot ends.
+                  The wipe is
+                  not automatic.
                 </div>
 
                 {customerView === "signin" && (
@@ -1021,7 +1241,7 @@ export default function MTNDisbursement() {
                       is not registered, create a sandbox wallet first.
                     </p>
                     <button type="submit" className="primary-action-btn" disabled={loading}>
-                      {loading ? "Checking location and signing in…" : "Sign in"}
+                      {loading ? "Signing in…" : "Sign in"}
                     </button>
                   </form>
                 )}
@@ -1051,7 +1271,7 @@ export default function MTNDisbursement() {
                     </div>
                     <div className="field-block">
                       <label htmlFor="register-phone" className="field-label">
-                        Ghana mobile number
+                        MTN sandbox test number
                       </label>
                       <input
                         id="register-phone"
@@ -1065,13 +1285,17 @@ export default function MTNDisbursement() {
                             phone_number: event.target.value,
                           }))
                         }
-                        placeholder="0241234567"
+                        placeholder="Number provided by MTN for sandbox testing"
                         className="standard-input"
                       />
+                      <p className="field-hint">
+                        Use only the test number assigned for your MTN sandbox
+                wallet; do not enter a personal number.
+                      </p>
                     </div>
                     <div className="field-block">
                       <label htmlFor="register-id-type" className="field-label">
-                        Identity document
+                        Synthetic identity document
                       </label>
                       <select
                         id="register-id-type"
@@ -1098,13 +1322,13 @@ export default function MTNDisbursement() {
                             id_number: event.target.value,
                           }))
                         }
-                        placeholder="Document number"
+                        placeholder="TEST-ID-0001"
                         className="standard-input"
                       />
                     </div>
                     <div className="field-block">
                       <label htmlFor="register-email" className="field-label">
-                        Email address (stored for optional risk checks)
+                        Controlled test email
                       </label>
                       <input
                         id="register-email"
@@ -1120,6 +1344,10 @@ export default function MTNDisbursement() {
                         }
                         className="standard-input"
                       />
+                      <p className="field-hint">
+                        This address is kept as a contact detail. Transaction
+                        step-up uses your security code or eligible passport.
+                      </p>
                     </div>
                     <div className="field-block">
                       <label htmlFor="register-pin" className="field-label">
@@ -1141,10 +1369,79 @@ export default function MTNDisbursement() {
                         className="standard-input"
                       />
                     </div>
-                    <p className="location-required-note">
-                      Location access is required. Pressing continue will ask
-                      your browser to share an approximate location.
-                    </p>
+                    <div className="field-block">
+                      <label htmlFor="register-security-code" className="field-label">
+                        Choose a separate six-digit security code
+                      </label>
+                      <input
+                        id="register-security-code"
+                        type="password"
+                        required
+                        inputMode="numeric"
+                        autoComplete="new-password"
+                        maxLength={6}
+                        value={registration.security_code}
+                        onChange={(event) =>
+                          setRegistration((current) => ({
+                            ...current,
+                            security_code: event.target.value.replace(/\D/g, "").slice(0, 6),
+                          }))
+                        }
+                        className="standard-input"
+                      />
+                      <input
+                        aria-label="Confirm six-digit security code"
+                        type="password"
+                        required
+                        inputMode="numeric"
+                        autoComplete="new-password"
+                        maxLength={6}
+                        value={securityCodeConfirmation}
+                        onChange={(event) =>
+                          setSecurityCodeConfirmation(
+                            event.target.value.replace(/\D/g, "").slice(0, 6),
+                          )
+                        }
+                        placeholder="Confirm security code"
+                        className="standard-input"
+                      />
+                      <p className="field-hint">
+                        This is a reusable security code, not an OTP. You’ll
+                        enter it only if a transaction is rated MEDIUM risk.
+                        Keep it different from your wallet PIN.
+                      </p>
+                    </div>
+                    <label className="location-required-note pilot-consent-control">
+                      <input
+                        type="checkbox"
+                        checked={privacyNoticeAccepted}
+                        onChange={(event) =>
+                          setPrivacyNoticeAccepted(event.target.checked)
+                        }
+                        required
+                      />
+                      <span>
+                        I accept the sandbox notice. I will use fictional
+                        identity details and an MTN sandbox test number. I will
+                        use only an email inbox I control if I need verification
+                        codes.
+                      </span>
+                    </label>
+                    <label className="privacy-signal-note pilot-consent-control">
+                      <input
+                        type="checkbox"
+                        checked={shareCoarseLocation}
+                        onChange={(event) =>
+                          setShareCoarseLocation(event.target.checked)
+                        }
+                      />
+                      <span>
+                        Optional: share coarse location for this enrollment to
+                        test location-risk signals. If selected, the browser
+                        will request location permission; otherwise no GPS
+                        location is requested or sent.
+                      </span>
+                    </label>
                     <button type="submit" className="primary-action-btn" disabled={loading}>
                       {loading ? "Creating wallet…" : "Create sandbox wallet"}
                     </button>
@@ -1189,9 +1486,23 @@ export default function MTNDisbursement() {
                 <div className="field-block account-session-card">
                   <span className="field-label">Signed-in sandbox wallet</span>
                   <strong>{customerAccount.name} · {senderNumber}</strong>
-                  <button type="button" className="text-button" onClick={signOutCustomer}>
-                    Sign out
-                  </button>
+                  <div className="account-session-actions">
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={signOutCustomer}
+                    >
+                      Sign out
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button account-delete-button"
+                      onClick={deleteSandboxAccount}
+                      disabled={loading}
+                    >
+                      Delete sandbox account
+                    </button>
+                  </div>
                 </div>
 
                 {/* RECIPIENT NUMBER */}
@@ -1248,16 +1559,23 @@ export default function MTNDisbursement() {
                   </div>
                 </div>
 
-                {transactionType === "TRANSFER" && (
-                  <div className="privacy-signal-note">
-                    Location permission is required for transfers. The browser
-                    will request it when you continue. Device, IP, and
-                    approximate location signals are stored for account
-                    security and fraud detection; their values are not shown.
+                <label className="privacy-signal-note pilot-consent-control">
+                  <input
+                    type="checkbox"
+                    checked={shareCoarseLocation}
+                    onChange={(event) =>
+                      setShareCoarseLocation(event.target.checked)
+                    }
+                  />
+                  <span>
+                    Optional: share coarse location for this transaction to
+                    test location-risk signals. If selected, the browser will
+                    request location permission; otherwise no GPS location is
+                    requested or sent.
                     {locationStatus === "denied" &&
-                      " Location is blocked: enable it for this site in browser settings, then retry."}
-                  </div>
-                )}
+                      " Location access is blocked; you can continue without it."}
+                  </span>
+                </label>
 
                 <button
                   type="submit"
@@ -1421,20 +1739,29 @@ export default function MTNDisbursement() {
                   </div>
                 )}
 
+                {!stepUpChallenge.security_code_available && (
+                  <div className="stepup-code-unavailable" role="status">
+                    <strong>No security code is saved for this wallet.</strong>{" "}
+                    {stepUpChallenge.passport_available
+                      ? "Use the registered passport number for this transaction."
+                      : "Contact the pilot operator; this wallet has no available step-up method."}
+                  </div>
+                )}
+
                 <form onSubmit={handleVerifyStepUp} className="stepup-form-body">
                   <div className="field-block">
                     <div className="challenge-mode-tabs">
-                      {stepUpChallenge.email_available && (
+                      {stepUpChallenge.security_code_available && (
                         <button
                           type="button"
-                          className={`mode-tab ${stepUpMethod === "EMAIL" ? "active" : ""}`}
-                          aria-pressed={stepUpMethod === "EMAIL"}
+                          className={`mode-tab ${stepUpMethod === "SECURITY_CODE" ? "active" : ""}`}
+                          aria-pressed={stepUpMethod === "SECURITY_CODE"}
                           onClick={() => {
-                            setStepUpMethod("EMAIL");
+                            setStepUpMethod("SECURITY_CODE");
                             setStepUpInput("");
                           }}
                         >
-                          Email code
+                          Security code
                         </button>
                       )}
                       {stepUpChallenge.passport_available && (
@@ -1452,39 +1779,32 @@ export default function MTNDisbursement() {
                       )}
                     </div>
                     <label htmlFor="stepup-credential" className="field-label">
-                      {stepUpMethod === "EMAIL"
-                        ? `Enter the code sent to ${stepUpChallenge.verification_destination || "your email"}`
+                      {stepUpMethod === "SECURITY_CODE"
+                        ? "Enter your six-digit MEDIUM-risk security code"
                         : "Enter the passport number registered to this wallet"}
                     </label>
                     <input
                       id="stepup-credential"
                       type="text"
-                      inputMode={stepUpMethod === "EMAIL" ? "numeric" : "text"}
-                      autoComplete={stepUpMethod === "EMAIL" ? "one-time-code" : "off"}
-                      maxLength={stepUpMethod === "EMAIL" ? 6 : 64}
+                      inputMode={stepUpMethod === "SECURITY_CODE" ? "numeric" : "text"}
+                      autoComplete="off"
+                      maxLength={stepUpMethod === "SECURITY_CODE" ? 6 : 64}
                       autoFocus
                       value={stepUpInput}
                       onChange={(e) =>
                         setStepUpInput(
-                          stepUpMethod === "EMAIL"
+                          stepUpMethod === "SECURITY_CODE"
                             ? e.target.value.replace(/\D/g, "").slice(0, 6)
                             : e.target.value,
                         )
                       }
-                      placeholder={stepUpMethod === "EMAIL" ? "000000" : "Passport number"}
+                      placeholder={
+                        stepUpMethod === "SECURITY_CODE"
+                          ? "Six-digit security code"
+                          : "Passport number"
+                      }
                       className="large-code-input"
                     />
-                    {stepUpMethod === "EMAIL" &&
-                      stepUpChallenge.demo_hint &&
-                      !stepUpChallenge.live_mtn && (
-                      <button
-                        type="button"
-                        className="quick-fill-link"
-                        onClick={() => setStepUpInput(stepUpChallenge.demo_hint)}
-                      >
-                        Fill Code: {stepUpChallenge.demo_hint}
-                      </button>
-                      )}
                   </div>
 
                   <div className="form-button-row">
@@ -1499,7 +1819,11 @@ export default function MTNDisbursement() {
                     <button
                       type="submit"
                       className="primary-action-btn"
-                      disabled={loading || stepUpInput.length < 4}
+                      disabled={
+                        loading ||
+                        stepUpInput.length <
+                          (stepUpMethod === "SECURITY_CODE" ? 6 : 4)
+                      }
                     >
                       {loading ? "Verifying..." : "Verify & Authorize"}
                     </button>
@@ -1583,15 +1907,17 @@ export default function MTNDisbursement() {
                         <CrossIcon />
                       </div>
                       <h4>
-                        {receipt.status === "FAILED"
-                          ? "Transfer Failed"
-                          : "Transaction Declined"}
+                        {receipt.status === "NOT_SUBMITTED"
+                          ? "Transfer Not Sent"
+                          : receipt.status === "FAILED"
+                            ? "Transfer Failed"
+                            : "Transaction Declined"}
                       </h4>
                       <p>
-                        {receipt.status === "FAILED"
-                          ? receipt.message || "MTN did not accept the transfer."
-                          : receipt.message ||
-                            "Blocked by fraud defense engine. Money did not leave your wallet."}
+                        {receipt.message ||
+                          (receipt.status === "FAILED"
+                            ? "MTN did not accept the transfer."
+                            : "Blocked by fraud defense engine. Money did not leave your wallet.")}
                       </p>
                     </div>
 
@@ -1602,7 +1928,13 @@ export default function MTNDisbursement() {
                       </div>
                       <div className="receipt-data-row">
                         <span>Risk Tier:</span>
-                        <span className="risk-tag risk-high">{receipt.risk_level}</span>
+                        <span
+                          className={`risk-tag risk-${String(
+                            receipt.risk_level || "unknown",
+                          ).toLowerCase()}`}
+                        >
+                          {receipt.risk_level || "UNKNOWN"}
+                        </span>
                       </div>
                       {receipt.reasons?.length > 0 && (
                         <div className="reasons-block">

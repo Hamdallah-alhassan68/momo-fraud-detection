@@ -23,7 +23,7 @@ PRODUCTION_TARGET_ENVIRONMENT = "mtnghana"
 SANDBOX_BASE_URL = "https://sandbox.momodeveloper.mtn.com"
 SANDBOX_TARGET_ENVIRONMENT = "sandbox"
 DEFAULT_SANDBOX_SUBSCRIPTION_KEY = "c92534d80b9f404b833fff6d5be2cfc5"
-DEFAULT_SANDBOX_CALLBACK_URL = "https://webhook.site/"
+DEFAULT_SANDBOX_CALLBACK_URL = ""
 DEFAULT_PRODUCTION_CALLBACK_URL = "http://127.0.0.1/"
 DEFAULT_CALLBACK_URL = DEFAULT_SANDBOX_CALLBACK_URL
 SANDBOX_MAX_AMOUNT = Decimal("10000.00")
@@ -149,6 +149,11 @@ class MtnDisbursementClient:
             missing.append(names[1])
         if not api_key:
             missing.append(names[2])
+        if (
+            environment == "sandbox"
+            and not os.getenv("MTN_DISBURSEMENT_CALLBACK_URL", "").strip()
+        ):
+            missing.append("MTN_DISBURSEMENT_CALLBACK_URL")
 
         if missing:
             raise MtnDisbursementError(
@@ -440,6 +445,11 @@ def get_configuration_status():
         missing.append(names[1])
     if not api_key:
         missing.append(names[2])
+    if (
+        environment == "sandbox"
+        and not os.getenv("MTN_DISBURSEMENT_CALLBACK_URL", "").strip()
+    ):
+        missing.append("MTN_DISBURSEMENT_CALLBACK_URL")
 
     if len(os.getenv("MOMO_ADMIN_TOKEN", "")) < 32:
         missing.append("MOMO_ADMIN_TOKEN")

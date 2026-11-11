@@ -522,9 +522,12 @@ def initialize_database():
             email TEXT NOT NULL,
             email_verified INTEGER NOT NULL DEFAULT 0,
             pin_hash TEXT NOT NULL,
+            step_up_code_hash TEXT,
             balance REAL NOT NULL DEFAULT 10000,
             status TEXT NOT NULL DEFAULT 'ACTIVE',
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            privacy_notice_version TEXT,
+            privacy_consent_at TEXT
         )
         """
     )
@@ -539,6 +542,7 @@ def initialize_database():
             ip_address TEXT,
             location_latitude REAL,
             location_longitude REAL,
+            location_consent INTEGER NOT NULL DEFAULT 0,
             trusted INTEGER NOT NULL DEFAULT 0,
             observed_at TEXT NOT NULL
         )
@@ -632,6 +636,19 @@ def initialize_database():
     _ensure_column(connection, "momo_sessions", "location_longitude", "REAL")
     _ensure_column(connection, "momo_sessions", "risk_signals", "TEXT")
     _ensure_column(connection, "momo_sessions", "assessment_reasons", "TEXT")
+    _ensure_column(
+        connection, "sandbox_customer_profiles", "privacy_notice_version", "TEXT"
+    )
+    _ensure_column(
+        connection, "sandbox_customer_profiles", "privacy_consent_at", "TEXT"
+    )
+    _ensure_column(
+        connection, "sandbox_customer_profiles", "step_up_code_hash", "TEXT"
+    )
+    _ensure_column(
+        connection, "customer_security_signals", "location_consent",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
     _ensure_column(connection, "audit_logs", "prev_hash", "TEXT")
     _ensure_column(connection, "audit_logs", "entry_hash", "TEXT")
     _ensure_column(connection, "audit_logs", "hmac_signature", "TEXT")
@@ -2493,16 +2510,21 @@ def create_sandbox_customer_profile(
     pin_hash,
     balance=10000.0,
     email_verified=False,
+    privacy_notice_version=None,
+    privacy_consent_at=None,
+    step_up_code_hash=None,
 ):
-    """Persist a sandbox-only profile with hashed identity and PIN values."""
+    """Persist a sandbox-only profile with hashed credentials and identity."""
     connection = get_connection()
     try:
         connection.execute(
             """
             INSERT INTO sandbox_customer_profiles (
                 phone_number, customer_ref, full_name, id_type, id_hash,
-                email, email_verified, pin_hash, balance, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
+                email, email_verified, pin_hash, step_up_code_hash,
+                balance, status, created_at,
+                privacy_notice_version, privacy_consent_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)
             """,
             (
                 phone_number,
@@ -2513,8 +2535,11 @@ def create_sandbox_customer_profile(
                 email,
                 int(bool(email_verified)),
                 pin_hash,
+                step_up_code_hash,
                 float(balance),
                 datetime.now(timezone.utc).isoformat(),
+                privacy_notice_version,
+                privacy_consent_at,
             ),
         )
         connection.commit()
@@ -2532,13 +2557,44 @@ def get_sandbox_customer_profile(phone_number):
         row = connection.execute(
             """
             SELECT phone_number, customer_ref, full_name, id_type, id_hash,
-                   email, email_verified, pin_hash, balance, status
+                   email, email_verified, pin_hash, balance, status,
+                   privacy_notice_version, privacy_consent_at,
+                   step_up_code_hash
             FROM sandbox_customer_profiles
             WHERE phone_number = ? OR customer_ref = ?
             """,
             (phone_number, phone_number),
         ).fetchone()
         return dict(row) if row else None
+    finally:
+        connection.close()
+
+
+def delete_sandbox_customer_profile(customer_ref):
+    """Remove sandbox credentials and security/session signals for one profile."""
+    connection = get_connection()
+    try:
+        connection.execute("BEGIN")
+        connection.execute(
+            "DELETE FROM customer_security_signals WHERE customer_ref = ?",
+            (customer_ref,),
+        )
+        connection.execute(
+            "DELETE FROM momo_sessions WHERE customer_ref = ?",
+            (customer_ref,),
+        )
+        cursor = connection.execute(
+            """
+            DELETE FROM sandbox_customer_profiles
+            WHERE phone_number = ? OR customer_ref = ?
+            """,
+            (customer_ref, customer_ref),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
 
@@ -2561,6 +2617,24 @@ def update_sandbox_customer_email(phone_number, email):
         connection.close()
 
 
+def update_sandbox_customer_step_up_code(phone_number, step_up_code_hash):
+    """Set a sandbox wallet's hashed reusable MEDIUM-risk security code."""
+    connection = get_connection()
+    try:
+        cursor = connection.execute(
+            """
+            UPDATE sandbox_customer_profiles
+            SET step_up_code_hash = ?
+            WHERE phone_number = ?
+            """,
+            (step_up_code_hash, phone_number),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+    finally:
+        connection.close()
+
+
 def record_customer_security_signal(
     customer_ref,
     event_type,
@@ -2570,6 +2644,7 @@ def record_customer_security_signal(
     location_longitude=None,
     session_id=None,
     trusted=False,
+    location_consent=False,
 ):
     """Persist privacy-disclosed device, network, and coarse location observations."""
     connection = get_connection()
@@ -2578,8 +2653,9 @@ def record_customer_security_signal(
             """
             INSERT INTO customer_security_signals (
                 customer_ref, session_id, event_type, device_id, ip_address,
-                location_latitude, location_longitude, trusted, observed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                location_latitude, location_longitude, location_consent,
+                trusted, observed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 customer_ref,
@@ -2589,6 +2665,7 @@ def record_customer_security_signal(
                 ip_address,
                 location_latitude,
                 location_longitude,
+                int(bool(location_consent)),
                 int(trusted),
                 datetime.now(timezone.utc).isoformat(),
             ),

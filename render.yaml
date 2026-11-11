@@ -24,6 +24,8 @@ services:
         sync: false
       - key: MOMO_ENABLE_DEMO_ADMIN_USERS
         value: "false"
+      - key: MOMO_SIMULATION_ONLY
+        value: "true"
       - key: MTN_DISBURSEMENT_ENVIRONMENT
         value: sandbox
       - key: FRONTEND_ORIGINS

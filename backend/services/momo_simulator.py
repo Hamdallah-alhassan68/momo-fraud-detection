@@ -41,7 +41,7 @@ from database.database import (
 )
 from services import events
 from services.fraud_detector import fraud_detector
-from services.email_service import send_step_up_email, get_smtp_config
+
 from services.mtn_disbursement import (
     get_mtn_disbursement_client,
     MtnDisbursementError,
@@ -259,6 +259,7 @@ def _ensure_customer(customer_ref):
             "email_verified": bool(sandbox_profile["email_verified"]),
             "balance": float(sandbox_profile["balance"]),
             "pin_hash": sandbox_profile["pin_hash"],
+            "step_up_code_hash": sandbox_profile.get("step_up_code_hash"),
             "base_ip": "127.0.0.1",
             "devices": [],
             "sandbox_profile": True,
@@ -325,6 +326,20 @@ SESSION_FREEZE_MINUTES = 2
 FROZEN_UNTIL = {}
 
 
+def remove_sandbox_customer(customer_ref):
+    """Clear one sandbox customer's runtime-only profile and balance."""
+    CUSTOMERS[:] = [
+        customer
+        for customer in CUSTOMERS
+        if not (
+            customer.get("sandbox_profile")
+            and customer.get("ref") == customer_ref
+        )
+    ]
+    BALANCES.pop(customer_ref, None)
+    FROZEN_UNTIL.pop(customer_ref, None)
+
+
 def _mask_phone(phone):
     if len(phone) >= 6:
         return phone[:3] + "***" + phone[-2:]
@@ -352,6 +367,17 @@ def update_customer_email(customer_ref, email):
         "email_verified": True,
         "masked_email": _mask_email(clean_email),
     }
+
+
+def update_customer_step_up_code(customer_ref, code_hash):
+    """Refresh the cached sandbox customer's hashed MEDIUM-risk code."""
+    customer = _ensure_customer(customer_ref)
+    if not customer.get("sandbox_profile"):
+        raise ValueError(
+            "Security-code setup is available only for self-enrolled sandbox wallets."
+        )
+    customer["step_up_code_hash"] = code_hash
+
 
 def _mask_email(email):
     local_part, separator, domain = email.partition("@")
@@ -532,16 +558,15 @@ def initiate_transaction(
         if verification == "OTP"
         else "Enter your MoMo PIN to authorise this transaction"
     )
+    demo_hint = otp_code or (
+        None if customer.get("sandbox_profile") else customer.get("pin")
+    )
 
     return {
         "session_id": session_id,
         "verification_method": verification,
         "message": message,
-        **(
-            {"demo_hint": otp_code or customer["pin"]}
-            if not live_mtn
-            else {}
-        ),
+        **({"demo_hint": demo_hint} if not live_mtn and demo_hint else {}),
         "customer_name": customer["name"],
         "amount": amount,
         "recipient": recipient,
@@ -613,7 +638,17 @@ def _has_impossible_travel(location, trusted_locations, now):
 
 
 def _verify_step_up_credential(customer, session, credential, method):
-    verification_method = str(method or "EMAIL").strip().upper()
+    verification_method = str(method or "SECURITY_CODE").strip().upper()
+    if verification_method == "SECURITY_CODE":
+        code = str(credential or "").strip()
+        code_hash = customer.get("step_up_code_hash")
+        if not code_hash:
+            raise ValueError(
+                "A MEDIUM-risk security code is not set for this wallet."
+            )
+        if not verify_password(code, code_hash):
+            raise ValueError("Incorrect security code. Please try again.")
+        return
     if verification_method == "PASSPORT":
         if str(customer.get("id_type") or "").upper() != "PASSPORT":
             raise ValueError("Passport verification is not available for this wallet.")
@@ -630,16 +665,12 @@ def _verify_step_up_credential(customer, session, credential, method):
         if not passport_matches:
             raise ValueError("Incorrect passport number. Please try again.")
         return
-    if verification_method == "EMAIL":
-        expected_otp = str(session.get("otp_code") or "").strip()
-        clean_code = str(credential).replace("-", "").strip().upper()
-        if not expected_otp or clean_code != expected_otp:
-            raise ValueError("Incorrect email verification code. Please try again.")
-        return
-    raise ValueError("Choose email code or passport verification.")
+    raise ValueError("Choose your security code or passport verification.")
 
 
-def verify_transaction(session_id, code, step_up=False, step_up_method="EMAIL"):
+def verify_transaction(
+    session_id, code, step_up=False, step_up_method="SECURITY_CODE"
+):
     """Verify the PIN/OTP then run the fraud layer in real time."""
 
     session = get_momo_session(session_id)
@@ -667,7 +698,25 @@ def verify_transaction(session_id, code, step_up=False, step_up_method="EMAIL"):
             raise ValueError(
                 "This transaction does not require step-up verification."
             )
-        _verify_step_up_credential(customer, session, code, step_up_method)
+        try:
+            _verify_step_up_credential(customer, session, code, step_up_method)
+        except ValueError:
+            attempts = int(session.get("step_up_count") or 0) + 1
+            update_momo_session_status(
+                session_id,
+                "BLOCKED" if attempts >= 5 else "STEP_UP",
+                step_up_count=attempts,
+                reason=(
+                    "Too many incorrect step-up attempts"
+                    if attempts >= 5
+                    else "Incorrect step-up credential"
+                ),
+            )
+            if attempts >= 5:
+                raise ValueError(
+                    "Too many incorrect verification attempts. Start a new transaction."
+                )
+            raise
     else:
         method = session["verification_method"]
         if method == "PIN" and customer.get("pin_hash"):
@@ -923,7 +972,6 @@ def verify_transaction(session_id, code, step_up=False, step_up_method="EMAIL"):
         session_id, risk_level, assessment, reference, transaction,
         signals, amount, dest_ref, origin_ref, origin_new, dest_new,
         session["status"], session.get("otp_code"), ip_address, device_id,
-        step_up_email=customer.get("email"),
         live_mtn=live_mtn,
         customer=customer,
     )
@@ -943,7 +991,7 @@ def verify_transaction(session_id, code, step_up=False, step_up_method="EMAIL"):
 def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
                       signals, amount, dest_ref, origin_ref, origin_new, dest_new,
                       session_status, session_otp, ip_address, device_id,
-                      step_up_email=None, live_mtn=False, customer=None):
+                      live_mtn=False, customer=None):
     """Apply the fraud engine decision to the transaction session."""
 
     if risk_level == "LOW" or session_status == "STEP_UP":
@@ -954,30 +1002,15 @@ def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
         )
 
     if risk_level == "MEDIUM":
+        security_code_available = bool(
+            customer and customer.get("step_up_code_hash")
+        )
         passport_available = bool(
             customer
             and str(customer.get("id_type") or "").upper() == "PASSPORT"
             and (customer.get("id_hash") or customer.get("id_number"))
         )
-        email_result = None
-        step_up_otp = None
-        email_available = bool(step_up_email)
-        if email_available:
-            step_up_otp = f"{secrets.randbelow(1_000_000):06d}"
-            email_result = send_step_up_email(
-                recipient_email=step_up_email,
-                otp_code=step_up_otp,
-                transaction_details={
-                    "amount": format(amount, ".2f"),
-                    "currency": "EUR" if live_mtn else "GHS",
-                    "recipient": dest_ref,
-                    "customer_name": (customer or {}).get("name", "Valued Customer"),
-                    "reasons": assessment["reasons"],
-                },
-            )
-            email_available = not live_mtn or email_result["delivered"]
-
-        if not email_available and not passport_available:
+        if not security_code_available and not passport_available:
             _finalize(
                 "BLOCKED", "STEP_UP_UNAVAILABLE", transaction, assessment,
                 ip_address, device_id
@@ -987,13 +1020,14 @@ def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
                 "BLOCKED",
                 risk_level=risk_level,
                 risk_score=assessment["risk_score"],
-                reason="No usable email or passport verification method is available",
+                reason="No usable security code or passport verification method is available",
             )
             return {
                 "status": "BLOCKED",
                 "message": (
                     "This transaction was blocked because no verification "
-                    "method is available. Money has NOT left your wallet."
+                    "method is available. Set a security code or use an eligible "
+                    "passport wallet. Money has NOT left your wallet."
                 ),
                 "transaction_reference": reference,
                 "amount": amount,
@@ -1009,7 +1043,7 @@ def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
         update_momo_session_status(
             session_id, "STEP_UP",
             reason="Additional verification required",
-            otp_code=step_up_otp if email_available else None,
+            otp_code=None,
             risk_level=risk_level, risk_score=assessment["risk_score"],
             risk_signals=json.dumps(signals, sort_keys=True),
             assessment_reasons=json.dumps(assessment["reasons"]),
@@ -1021,28 +1055,12 @@ def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
         events.publish("stats", {"reason": "step_up_required"})
         return {
             "status": "STEP_UP_REQUIRED",
-            "message": "Suspicious activity detected. Verify with your email code or passport number.",
+            "message": "Suspicious activity detected. Verify with your security code or passport number.",
             "session_id": session_id,
             "step_up": True,
-            "verification_method": "EMAIL_OR_PASSPORT",
-            "email_available": email_available,
+            "verification_method": "SECURITY_CODE_OR_PASSPORT",
+            "security_code_available": security_code_available,
             "passport_available": passport_available,
-            "verification_destination": (
-                _mask_email(step_up_email) if email_available else None
-            ),
-            "delivery_status": (
-                email_result["delivery_status"]
-                if email_result and live_mtn
-                else "SIMULATED_NOT_SENT" if email_result else None
-            ),
-            "smtp_configured": (
-                email_result["smtp_configured"] if email_result else False
-            ),
-            **(
-                {"demo_hint": step_up_otp}
-                if email_available and not live_mtn
-                else {}
-            ),
             "reasons": assessment["reasons"],
             "risk_score": assessment["risk_score"],
             "signals": signals,
@@ -1146,6 +1164,41 @@ def _apply_outcome(session_id, risk_level, assessment, reference, transaction,
             transaction["mtn_reference_id"] = mtn_transfer.get("reference_id")
             transaction["mtn_financial_id"] = mtn_transfer.get("financialTransactionId")
         except MtnDisbursementError as err:
+            if (
+                err.status_code == 503
+                and err.reference_id is None
+                and "not configured" in str(err).lower()
+            ):
+                _finalize(
+                    "NOT_SUBMITTED",
+                    "MTN_TRANSFER_NOT_SUBMITTED",
+                    transaction,
+                    assessment,
+                    ip_address,
+                    device_id,
+                )
+                update_momo_session_status(
+                    session_id,
+                    "NOT_SUBMITTED",
+                    risk_level=risk_level,
+                    risk_score=assessment["risk_score"],
+                    reason="MTN configuration is incomplete; no request was sent",
+                )
+                return {
+                    "status": "NOT_SUBMITTED",
+                    "message": (
+                        "The transfer was not sent to MTN because sandbox "
+                        f"configuration is incomplete. {err} No money was moved."
+                    ),
+                    "transaction_reference": reference,
+                    "risk_score": assessment["risk_score"],
+                    "risk_level": risk_level,
+                    "decision": "MTN CONFIGURATION REQUIRED",
+                    "reasons": assessment["reasons"],
+                    "signals": signals,
+                    "approved": False,
+                    "live_mtn": True,
+                }
             if not (err.status_code >= 500 and err.reference_id):
                 _finalize(
                     "FAILED", "MTN_TRANSFER_FAILED", transaction, assessment,

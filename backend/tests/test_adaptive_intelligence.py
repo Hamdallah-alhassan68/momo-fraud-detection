@@ -1046,11 +1046,23 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         self.original_email_verified = momo_simulator.CUSTOMERS[0][
             "email_verified"
         ]
+        self.original_security_code_hash = momo_simulator.CUSTOMERS[0].get(
+            "step_up_code_hash"
+        )
+        from services.auth import hash_password
+
+        momo_simulator.CUSTOMERS[0]["step_up_code_hash"] = hash_password("654321")
 
     def tearDown(self):
         self.simulator.CUSTOMERS[0]["email_verified"] = (
             self.original_email_verified
         )
+        if self.original_security_code_hash is None:
+            self.simulator.CUSTOMERS[0].pop("step_up_code_hash", None)
+        else:
+            self.simulator.CUSTOMERS[0][
+                "step_up_code_hash"
+            ] = self.original_security_code_hash
         self.simulator.BALANCES.clear()
         self.simulator.BALANCES.update(self.original_balances)
         self.simulator.FROZEN_UNTIL.clear()
@@ -1058,7 +1070,7 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         database.DATABASE_PATH = self.original_database_path
         self.temp_dir.cleanup()
 
-    def test_medium_risk_uses_simulated_email_not_sms(self):
+    def test_medium_risk_uses_signup_security_code_without_email_otp(self):
         session = self.simulator.initiate_transaction(
             customer_ref="WALLET-1001",
             transaction_type="TRANSFER",
@@ -1071,22 +1083,27 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         )
 
         self.assertEqual(challenge["status"], "STEP_UP_REQUIRED")
-        self.assertEqual(challenge["verification_method"], "EMAIL_OR_PASSPORT")
-        self.assertTrue(challenge["email_available"])
         self.assertEqual(
-            challenge["verification_destination"], "k***h@example.test"
+            challenge["verification_method"], "SECURITY_CODE_OR_PASSPORT"
         )
-        self.assertEqual(challenge["delivery_status"], "SIMULATED_NOT_SENT")
+        self.assertTrue(challenge["security_code_available"])
+        self.assertNotIn("email_available", challenge)
+        self.assertNotIn("demo_hint", challenge)
         self.assertIn("Recent SIM change", challenge["reasons"])
-        self.assertNotIn("otp", challenge)
+        self.assertIsNone(
+            self.simulator.get_momo_session(session["session_id"])["otp_code"]
+        )
 
         result = self.simulator.verify_transaction(
-            session["session_id"], challenge["demo_hint"], step_up=True
+            session["session_id"],
+            "654321",
+            step_up=True,
+            step_up_method="SECURITY_CODE",
         )
         self.assertEqual(result["status"], "APPROVED")
         self.assertTrue(result["step_up_completed"])
 
-    def test_medium_risk_email_step_up_does_not_require_registration_verification(self):
+    def test_medium_risk_security_code_does_not_depend_on_email_verification(self):
         self.simulator.CUSTOMERS[0]["email_verified"] = False
         session = self.simulator.initiate_transaction(
             customer_ref="WALLET-1001",
@@ -1101,10 +1118,10 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "STEP_UP_REQUIRED")
-        self.assertTrue(result["email_available"])
-        self.assertIn("demo_hint", result)
+        self.assertTrue(result["security_code_available"])
+        self.assertNotIn("demo_hint", result)
 
-    def test_live_step_up_fails_closed_when_email_is_not_delivered(self):
+    def test_live_step_up_does_not_generate_or_send_an_email_otp(self):
         assessment = {
             "risk_score": 0.45,
             "risk_level": "MEDIUM",
@@ -1124,26 +1141,53 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         )
         with patch.object(
             fraud_detector, "assess_transaction", return_value=assessment
-        ), patch.object(
-            self.simulator,
-            "send_step_up_email",
-            return_value={
-                "delivered": False,
-                "delivery_status": "LOCAL_OUTBOX",
-                "smtp_configured": False,
-            },
         ):
             result = self.simulator.verify_transaction(session["session_id"], "2233")
 
-        self.assertEqual(result["status"], "BLOCKED")
+        self.assertEqual(result["status"], "STEP_UP_REQUIRED")
+        self.assertTrue(result["security_code_available"])
+        self.assertNotIn("email_available", result)
         self.assertNotIn("demo_hint", result)
         self.assertEqual(
             self.simulator.BALANCES["WALLET-1001"], initial_balance
         )
         self.assertEqual(
             self.simulator.get_momo_session(session["session_id"])["status"],
-            "BLOCKED",
+            "STEP_UP",
         )
+
+    def test_five_incorrect_security_codes_block_the_transaction(self):
+        session = self.simulator.initiate_transaction(
+            customer_ref="WALLET-1001",
+            transaction_type="TRANSFER",
+            amount=25,
+            recipient="WALLET-2001",
+            scenario="RECENT_SIM_SWAP",
+        )
+        challenge = self.simulator.verify_transaction(
+            session["session_id"], "2233"
+        )
+        self.assertEqual(challenge["status"], "STEP_UP_REQUIRED")
+
+        for _ in range(4):
+            with self.assertRaisesRegex(ValueError, "Incorrect security code"):
+                self.simulator.verify_transaction(
+                    session["session_id"],
+                    "000000",
+                    step_up=True,
+                    step_up_method="SECURITY_CODE",
+                )
+
+        with self.assertRaisesRegex(ValueError, "Too many incorrect"):
+            self.simulator.verify_transaction(
+                session["session_id"],
+                "000000",
+                step_up=True,
+                step_up_method="SECURITY_CODE",
+            )
+        saved_session = self.simulator.get_momo_session(session["session_id"])
+        self.assertEqual(saved_session["status"], "BLOCKED")
+        self.assertEqual(saved_session["step_up_count"], 5)
 
     def test_live_transfer_failure_does_not_complete_or_debit_wallet(self):
         from services.mtn_disbursement import MtnDisbursementError

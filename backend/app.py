@@ -23,8 +23,10 @@ from database.database import (
     has_pending_mtn_transfer,
     create_sandbox_customer_profile,
     get_sandbox_customer_profile,
+    delete_sandbox_customer_profile,
     record_customer_security_signal,
     update_sandbox_customer_email,
+    update_sandbox_customer_step_up_code,
     create_fraud_alert,
     create_fraud_case,
     create_risk_assessment,
@@ -48,7 +50,7 @@ from database.database import (
     verify_audit_chain,
     VALID_ADMIN_ROLES,
 )
-from services import auth, events
+from services import auth, events, momo_simulator
 from services.adaptive_intelligence import build_monitoring, record_drift_baseline
 from services.fraud_detector import fraud_detector
 from services.mtn_collection import (
@@ -95,6 +97,7 @@ app = FastAPI(
 )
 
 _EMAIL_VERIFICATION_CHALLENGES = {}
+PUBLIC_PILOT_PRIVACY_NOTICE_VERSION = "2026-11"
 
 frontend_env = os.getenv("FRONTEND_ORIGINS", "")
 origins = [
@@ -128,6 +131,22 @@ auth.seed_default_admin_users()
 
 def _configured_admin_token():
     return os.getenv("MOMO_ADMIN_TOKEN", "")
+
+
+def _momo_simulation_only():
+    return os.getenv("MOMO_SIMULATION_ONLY", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _require_mtn_live_operations():
+    if _momo_simulation_only():
+        raise HTTPException(
+            status_code=403,
+            detail="This deployment is simulation-only. No MTN requests are enabled.",
+        )
 
 
 def get_current_user(
@@ -190,6 +209,7 @@ def require_live_disbursement_admin(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> dict:
+    _require_mtn_live_operations()
     configured = _configured_admin_token()
     if len(configured) < 32:
         raise HTTPException(
@@ -555,7 +575,7 @@ def momo_customer_login(
         raise HTTPException(status_code=403, detail="Sandbox wallet is unavailable.")
 
     customer_phone = normalized_phone
-    location = _validate_customer_location(body, required=False)
+    location = _validate_customer_location(body)
     device_id = _validate_device_id(body.get("device_id"))
     if device_id:
         record_customer_security_signal(
@@ -565,6 +585,7 @@ def momo_customer_login(
             ip_address=_client_ip(request),
             location_latitude=location[0] if location else None,
             location_longitude=location[1] if location else None,
+            location_consent=body.get("location_consent") is True,
         )
     token = auth.create_access_token(
         user_id=0,
@@ -581,6 +602,15 @@ def momo_customer_login(
             "name": subscriber.get("full_name") or "Sandbox customer",
             "masked_email": _mask_customer_email(subscriber.get("email")),
             "email_verified": bool(subscriber.get("email_verified", False)),
+            "has_security_code": bool(subscriber.get("step_up_code_hash")),
+            "transfer_mode": (
+                "SIMULATION_ONLY"
+                if _momo_simulation_only()
+                else "MTN_SANDBOX"
+            ),
+            "security_code_setup_available": bool(
+                get_sandbox_customer_profile(customer_phone)
+            ),
         },
         "sandbox_only": True,
     }
@@ -607,18 +637,17 @@ def _validate_device_id(value):
     return clean
 
 
-def _validate_customer_location(body, required):
+def _validate_customer_location(body):
     latitude = body.get("location_latitude")
     longitude = body.get("location_longitude")
-    if latitude is None or longitude is None:
-        if required:
+    if body.get("location_consent") is not True:
+        if latitude is not None or longitude is not None:
             raise HTTPException(
-                status_code=428,
-                detail=(
-                    "Location access is required. Allow location in your browser "
-                    "settings, then try again."
-                ),
+                status_code=400,
+                detail="Location coordinates require explicit location consent.",
             )
+        return None
+    if latitude is None or longitude is None:
         return None
     try:
         latitude = float(latitude)
@@ -691,8 +720,14 @@ def momo_customer_register(
     id_number = re.sub(r"[\s-]", "", str(body.get("id_number") or "")).upper()
     email_address = str(body.get("email") or "").strip().lower()
     pin = str(body.get("pin") or "").strip()
+    security_code = str(body.get("security_code") or "").strip()
     if len(full_name) < 2 or len(full_name) > 120:
         raise HTTPException(status_code=400, detail="Enter your full name.")
+    if body.get("privacy_notice_accepted") is not True:
+        raise HTTPException(
+            status_code=400,
+            detail="Accept the sandbox privacy notice before creating a wallet.",
+        )
     if id_type not in {"PASSPORT", "GHANA_CARD"} or len(id_number) < 5:
         raise HTTPException(
             status_code=400,
@@ -703,7 +738,17 @@ def momo_customer_register(
         raise HTTPException(status_code=400, detail="Enter a valid email address.")
     if not re.fullmatch(r"\d{4}", pin):
         raise HTTPException(status_code=400, detail="Choose a four-digit demo wallet PIN.")
-    location = _validate_customer_location(body, required=True)
+    if not re.fullmatch(r"\d{6}", security_code):
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a six-digit MEDIUM-risk security code.",
+        )
+    if security_code == pin:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a security code that is different from your wallet PIN.",
+        )
+    location = _validate_customer_location(body)
     device_id = _validate_device_id(body.get("device_id"))
     if not device_id:
         raise HTTPException(status_code=400, detail="Device security context is unavailable.")
@@ -722,15 +767,19 @@ def momo_customer_register(
             id_hash=auth.hash_password(id_number),
             email=email_address,
             pin_hash=auth.hash_password(pin),
+            step_up_code_hash=auth.hash_password(security_code),
+            privacy_notice_version=PUBLIC_PILOT_PRIVACY_NOTICE_VERSION,
+            privacy_consent_at=datetime.now(timezone.utc).isoformat(),
         )
         record_customer_security_signal(
             customer_ref=phone,
             event_type="ENROLLMENT",
             device_id=device_id,
             ip_address=_client_ip(request),
-            location_latitude=location[0],
-            location_longitude=location[1],
+            location_latitude=location[0] if location else None,
+            location_longitude=location[1] if location else None,
             trusted=True,
+            location_consent=body.get("location_consent") is True,
         )
     except sqlite3.IntegrityError as error:
         raise HTTPException(
@@ -758,6 +807,13 @@ def momo_customer_register(
             "name": profile["full_name"],
             "masked_email": _mask_customer_email(profile["email"]),
             "email_verified": bool(profile["email_verified"]),
+            "has_security_code": bool(profile.get("step_up_code_hash")),
+            "transfer_mode": (
+                "SIMULATION_ONLY"
+                if _momo_simulation_only()
+                else "MTN_SANDBOX"
+            ),
+            "security_code_setup_available": True,
             "sandbox_only": True,
         },
         "sandbox_only": True,
@@ -781,7 +837,94 @@ def momo_customer_session(authorization: str | None = Header(default=None)):
         "name": subscriber.get("full_name") or "Sandbox customer",
         "masked_email": masked_email,
         "email_verified": bool(subscriber.get("email_verified", False)),
+        "has_security_code": bool(subscriber.get("step_up_code_hash")),
+        "transfer_mode": (
+            "SIMULATION_ONLY"
+            if _momo_simulation_only()
+            else "MTN_SANDBOX"
+        ),
+        "security_code_setup_available": bool(
+            get_sandbox_customer_profile(phone)
+        ),
         "sandbox_only": True,
+    }
+
+
+@app.post("/api/momo/customer/security-code")
+def momo_customer_set_security_code(
+    body: dict = Body(...),
+    authorization: str | None = Header(default=None),
+):
+    subscriber = _require_sandbox_customer(authorization)
+    phone = str(subscriber.get("phone_number") or "")
+    profile = get_sandbox_customer_profile(phone)
+    if not profile:
+        raise HTTPException(
+            status_code=403,
+            detail="Security-code setup is available only for self-enrolled sandbox wallets.",
+        )
+    wallet_pin = str(body.get("wallet_pin") or "").strip()
+    if not auth.verify_password(wallet_pin, profile.get("pin_hash", "")):
+        raise HTTPException(status_code=401, detail="Wallet PIN is incorrect.")
+    security_code = str(body.get("security_code") or "").strip()
+    if not re.fullmatch(r"\d{6}", security_code):
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a six-digit MEDIUM-risk security code.",
+        )
+    if security_code == wallet_pin:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a security code that is different from your wallet PIN.",
+        )
+    code_hash = auth.hash_password(security_code)
+    try:
+        if not update_sandbox_customer_step_up_code(phone, code_hash):
+            raise HTTPException(
+                status_code=404, detail="Sandbox wallet was not found."
+            )
+        momo_simulator.update_customer_step_up_code(phone, code_hash)
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception("Could not save sandbox MEDIUM-risk security code")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not save the MEDIUM-risk security code.",
+        ) from error
+    return {"has_security_code": True}
+
+
+@app.delete("/api/momo/customer/me")
+def momo_customer_delete_account(
+    authorization: str | None = Header(default=None),
+):
+    subscriber = _require_sandbox_customer(authorization)
+    customer_ref = str(subscriber.get("phone_number") or "")
+    if not get_sandbox_customer_profile(customer_ref):
+        raise HTTPException(
+            status_code=403,
+            detail="Only self-enrolled sandbox profiles can be deleted here.",
+        )
+    try:
+        deleted = delete_sandbox_customer_profile(customer_ref)
+        _EMAIL_VERIFICATION_CHALLENGES.pop(customer_ref, None)
+        momo_simulator.remove_sandbox_customer(customer_ref)
+    except Exception as error:
+        logger.exception("Sandbox customer account deletion failed")
+        raise HTTPException(
+            status_code=500, detail="Unable to delete the sandbox account."
+        ) from error
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Sandbox account is unavailable.")
+    return {
+        "deleted": True,
+        "message": (
+            "The sandbox profile, security signals, and active transaction sessions "
+            "were deleted. Immutable transaction and audit records remain until "
+            "the operator-managed pilot data wipe, no later than 30 days after "
+            "the pilot ends."
+        ),
     }
 
 
@@ -1050,6 +1193,7 @@ def mtn_collection_request_to_pay(
     body: dict = Body(...),
     _current_user: dict = Depends(require_admin),
 ):
+    _require_mtn_live_operations()
     configuration = get_mtn_configuration_status()
     if body.get("production_confirmed") is not True:
         raise HTTPException(
@@ -1125,6 +1269,7 @@ def mtn_collection_request_status(
     reference_id: str,
     _current_user: dict = Depends(require_admin),
 ):
+    _require_mtn_live_operations()
     try:
         return get_mtn_collection_client().get_request_status(reference_id)
     except ValueError as error:
@@ -1229,6 +1374,7 @@ def mtn_disbursement_transfer(
     body: dict = Body(...),
     current_user: dict = Depends(require_live_disbursement_admin),
 ):
+    _require_mtn_live_operations()
     if body.get("production_confirmed") is not True:
         raise HTTPException(
             status_code=400,
@@ -1340,6 +1486,7 @@ def mtn_disbursement_transfer_status(
     reference_id: str,
     _current_user: dict = Depends(require_live_disbursement_admin),
 ):
+    _require_mtn_live_operations()
     try:
         return get_mtn_disbursement_client().get_transfer_status(reference_id)
     except ValueError as error:
@@ -1431,6 +1578,8 @@ def momo_transaction_initiate(
             subscriber = _require_sandbox_customer(authorization)
             customer_ref = subscriber.get("phone_number")
             live_mtn = body.get("transaction_type") == "TRANSFER"
+        if _momo_simulation_only():
+            live_mtn = False
         client_ip = _client_ip(request)
         if live_mtn and get_mtn_disbursement_configuration_status()["environment"] != "sandbox":
             raise HTTPException(
@@ -1445,14 +1594,7 @@ def momo_transaction_initiate(
                     "status before submitting another transfer."
                 ),
             )
-
-        location = _validate_customer_location(
-            body,
-            required=(
-                is_customer_session
-                and body.get("transaction_type") == "TRANSFER"
-            ),
-        )
+        location = _validate_customer_location(body)
         device_id = _validate_device_id(body.get("device_id"))
         if is_customer_session and not device_id:
             raise HTTPException(
@@ -1488,6 +1630,7 @@ def momo_transaction_initiate(
                 ip_address=client_ip,
                 location_latitude=location[0] if location else None,
                 location_longitude=location[1] if location else None,
+                location_consent=body.get("location_consent") is True,
             )
             for private_signal in (
                 "ip_address",
