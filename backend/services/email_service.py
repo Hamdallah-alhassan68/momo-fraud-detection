@@ -11,6 +11,7 @@ from email.mime.text import MIMEText
 from pathlib import Path
 
 from services import events
+from services.otp_delivery import OtpDeliveryError
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +258,59 @@ def send_email_verification_email(recipient_email, verification_code):
     except Exception:
         logger.warning("Email ownership verification delivery failed.")
         return False
+    return True
+
+
+def send_medium_risk_otp_email(recipient_email, otp_code, transaction_details=None):
+    """Deliver a short-lived MEDIUM-risk OTP without persisting or publishing it."""
+    smtp = get_smtp_config()
+    if not smtp["configured"]:
+        raise OtpDeliveryError(
+            "Email OTP delivery is not configured. Configure SMTP before authorizing MEDIUM-risk transfers."
+        )
+
+    recipient_email = str(recipient_email or "").strip()
+    if (
+        not recipient_email
+        or recipient_email.lower().endswith("@example.test")
+    ):
+        raise OtpDeliveryError(
+            "A verified, deliverable email address is required for MEDIUM-risk verification."
+        )
+
+    details = transaction_details or {}
+    transaction_type = str(details.get("transaction_type") or "MoMo").replace(
+        "_", " "
+    )
+    amount = float(details.get("amount") or 0)
+    message = MIMEText(
+        "Your MoMo Sentinel transaction requires additional authorization.\n\n"
+        f"Transaction: {transaction_type}\n"
+        f"Amount: GHS {amount:,.2f}\n"
+        f"One-time code: {otp_code}\n\n"
+        "This code expires in five minutes and can be used once. "
+        "Never share it with anyone.",
+        "plain",
+        "utf-8",
+    )
+    message["Subject"] = "Your MoMo Sentinel verification code"
+    message["From"] = smtp["from_address"]
+    message["To"] = recipient_email
+    message["Date"] = email.utils.formatdate(localtime=True)
+
+    try:
+        with smtplib.SMTP(smtp["host"], smtp["port"], timeout=5.0) as server:
+            if smtp["use_tls"]:
+                server.starttls()
+            server.login(smtp["user"], smtp["password"])
+            server.sendmail(
+                smtp["from_address"], [recipient_email], message.as_string()
+            )
+    except (OSError, smtplib.SMTPException) as error:
+        logger.warning("MEDIUM-risk OTP email delivery failed.")
+        raise OtpDeliveryError(
+            "Email delivery failed. No transaction was completed; please try again."
+        ) from error
     return True
 
 

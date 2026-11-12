@@ -880,6 +880,10 @@ class SandboxCustomerEmailVerificationTests(unittest.TestCase):
             self.assertEqual(challenge.status_code, 200, challenge.text)
             self.assertNotIn("code", challenge.json())
             code = send_email.call_args.args[1]
+            saved_challenge = self.app_module._EMAIL_VERIFICATION_CHALLENGES[
+                self.subscriber["phone_number"]
+            ]
+            self.assertNotIn(code, saved_challenge["code_hash"])
 
             verified = self.client.post(
                 "/api/momo/customer/email/verify",
@@ -955,7 +959,6 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
             "id_number": "TEST-ID-84521",
             "email": "controlled-test@example.test",
             "pin": "4826",
-            "security_code": "816204",
             "device_id": "browser-device-1",
         }
         with patch.dict(
@@ -977,11 +980,8 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
         profile = database.get_sandbox_customer_profile(self.phone)
         self.assertEqual(profile["privacy_notice_version"], "2026-11")
         self.assertTrue(profile["privacy_consent_at"])
-        self.assertNotEqual(profile["step_up_code_hash"], "816204")
-        self.assertTrue(
-            auth.verify_password("816204", profile["step_up_code_hash"])
-        )
-        self.assertTrue(accepted.json()["customer"]["has_security_code"])
+        self.assertIsNone(profile["step_up_code_hash"])
+        self.assertFalse(accepted.json()["customer"]["has_security_code"])
         self.assertNotIn("security_code", accepted.json()["customer"])
         self.assertNotIn("step_up_code_hash", accepted.json()["customer"])
         history = database.get_customer_security_history(self.phone)
@@ -1069,6 +1069,277 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
         self.assertEqual(verified.json()["status"], "APPROVED")
         self.assertFalse(verified.json()["live_mtn"])
         get_client.assert_not_called()
+
+    def test_cash_out_sends_hashed_sms_otp_without_returning_it(self):
+        registration = {
+            "phone_number": self.phone,
+            "full_name": "Fictional Test Customer",
+            "id_type": "PASSPORT",
+            "id_number": "TEST-ID-84521",
+            "email": "cashout@example.com",
+            "pin": "4826",
+            "security_code": "816204",
+            "device_id": "browser-device-1",
+            "privacy_notice_accepted": True,
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "MTN_DISBURSEMENT_ENVIRONMENT": "sandbox",
+                "MOMO_SIMULATION_ONLY": "true",
+            },
+            clear=False,
+        ):
+            created = self.client.post(
+                "/api/momo/customer/register",
+                json=registration,
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            headers = {"Authorization": f"Bearer {created.json()['token']}"}
+
+            with patch(
+                "app.send_transaction_otp_sms", return_value=True
+            ) as send_sms:
+                started = self.client.post(
+                    "/api/momo/transaction/initiate",
+                    headers=headers,
+                    json={
+                        "transaction_type": "CASH_OUT",
+                        "amount": 1,
+                        "recipient": "BANK-ACC-7001",
+                        "device_id": "browser-device-1",
+                    },
+                )
+
+        self.assertEqual(started.status_code, 200, started.text)
+        otp_code = send_sms.call_args.args[1]
+        self.assertEqual(send_sms.call_args.args[0], self.phone)
+        self.assertNotIn(otp_code, started.text)
+        self.assertNotIn("demo_hint", started.json())
+        session = database.get_momo_session(started.json()["session_id"])
+        self.assertNotEqual(session["otp_code"], otp_code)
+        self.assertTrue(session["otp_code"].startswith("hmac-sha256:"))
+        assessment = {
+            "risk_score": 0.1,
+            "risk_level": "LOW",
+            "decision": "APPROVE",
+            "isolation_forest_score": 0.1,
+            "rule_score": 0,
+            "reasons": [],
+        }
+        with patch.object(
+            self.momo_simulator.fraud_detector,
+            "assess_transaction",
+            return_value=assessment,
+        ):
+            verified = self.client.post(
+                "/api/momo/transaction/verify",
+                headers=headers,
+                json={
+                    "session_id": started.json()["session_id"],
+                    "code": otp_code,
+                },
+            )
+        self.assertEqual(verified.status_code, 200, verified.text)
+        self.assertEqual(verified.json()["status"], "APPROVED")
+        session = database.get_momo_session(started.json()["session_id"])
+        self.assertIsNone(session["otp_code"])
+
+    def test_high_risk_block_notifies_review_and_returns_score(self):
+        assessment = {
+            "risk_score": 0.8,
+            "risk_level": "HIGH",
+            "decision": "BLOCK",
+            "reasons": ["Unusual device"],
+        }
+        with patch("services.momo_simulator._finalize"), patch(
+            "services.momo_simulator.update_momo_session_status"
+        ):
+            result = self.momo_simulator._resolve_outcome(
+                session_id="high-risk-session",
+                risk_level="HIGH",
+                assessment=assessment,
+                reference="MOMO-HIGH-RISK",
+                transaction={},
+                signals={},
+                amount=1,
+                dest_ref="WALLET-3001",
+                origin_ref=self.phone,
+                origin_new=9999,
+                dest_new=10001,
+                session_status="PENDING",
+                session_otp=None,
+                ip_address="192.0.2.1",
+                device_id="browser-device-1",
+            )
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertEqual(result["risk_score"], 0.8)
+        self.assertIn("team has been notified", result["message"])
+
+    def test_cash_out_sms_delivery_is_limited_per_wallet(self):
+        registration = {
+            "phone_number": self.phone,
+            "full_name": "Fictional Test Customer",
+            "id_type": "PASSPORT",
+            "id_number": "TEST-ID-84521",
+            "email": "cashout@example.com",
+            "pin": "4826",
+            "device_id": "browser-device-1",
+            "privacy_notice_accepted": True,
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "MTN_DISBURSEMENT_ENVIRONMENT": "sandbox",
+                "MOMO_SIMULATION_ONLY": "true",
+            },
+            clear=False,
+        ):
+            created = self.client.post(
+                "/api/momo/customer/register",
+                json=registration,
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            headers = {"Authorization": "Bearer " + created.json()["token"]}
+            with patch("app.send_transaction_otp_sms", return_value=True) as sender:
+                responses = [
+                    self.client.post(
+                        "/api/momo/transaction/initiate",
+                        headers=headers,
+                        json={
+                            "transaction_type": "CASH_OUT",
+                            "amount": 1,
+                            "recipient": "BANK-ACC-7001",
+                            "device_id": "browser-device-1",
+                        },
+                    )
+                    for _ in range(4)
+                ]
+
+        self.assertEqual([response.status_code for response in responses],
+                         [200, 200, 200, 400])
+        self.assertEqual(sender.call_count, 3)
+        self.assertIn("ten minutes", responses[-1].json()["detail"])
+
+    def test_expired_cash_out_sms_otp_is_rejected_and_cleared(self):
+        registration = {
+            "phone_number": self.phone,
+            "full_name": "Fictional Test Customer",
+            "id_type": "PASSPORT",
+            "id_number": "TEST-ID-84521",
+            "email": "cashout@example.com",
+            "pin": "4826",
+            "security_code": "816204",
+            "device_id": "browser-device-1",
+            "privacy_notice_accepted": True,
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "MTN_DISBURSEMENT_ENVIRONMENT": "sandbox",
+                "MOMO_SIMULATION_ONLY": "true",
+            },
+            clear=False,
+        ):
+            created = self.client.post(
+                "/api/momo/customer/register",
+                json=registration,
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            headers = {"Authorization": "Bearer " + created.json()["token"]}
+            with patch("app.send_transaction_otp_sms", return_value=True):
+                started = self.client.post(
+                    "/api/momo/transaction/initiate",
+                    headers=headers,
+                    json={
+                        "transaction_type": "CASH_OUT",
+                        "amount": 1,
+                        "recipient": "BANK-ACC-7001",
+                        "device_id": "browser-device-1",
+                    },
+                )
+            self.assertEqual(started.status_code, 200, started.text)
+
+            connection = database.get_connection()
+            try:
+                connection.execute(
+                    "UPDATE momo_sessions SET otp_expires_at = ? WHERE session_id = ?",
+                    ("2000-01-01T00:00:00+00:00", started.json()["session_id"]),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            verified = self.client.post(
+                "/api/momo/transaction/verify",
+                headers=headers,
+                json={
+                    "session_id": started.json()["session_id"],
+                    "code": "123456",
+                },
+            )
+
+        self.assertEqual(verified.status_code, 400, verified.text)
+        self.assertIn("expired", verified.json()["detail"].lower())
+        session = database.get_momo_session(started.json()["session_id"])
+        self.assertEqual(session["status"], "EXPIRED")
+        self.assertIsNone(session["otp_code"])
+
+    def test_sms_delivery_failure_does_not_create_an_otp_session(self):
+        from services.otp_delivery import OtpDeliveryError
+
+        registration = {
+            "phone_number": self.phone,
+            "full_name": "Fictional Test Customer",
+            "id_type": "PASSPORT",
+            "id_number": "TEST-ID-84521",
+            "email": "cashout@example.com",
+            "pin": "4826",
+            "security_code": "816204",
+            "device_id": "browser-device-1",
+            "privacy_notice_accepted": True,
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "MTN_DISBURSEMENT_ENVIRONMENT": "sandbox",
+                "MOMO_SIMULATION_ONLY": "true",
+            },
+            clear=False,
+        ):
+            created = self.client.post(
+                "/api/momo/customer/register",
+                json=registration,
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            headers = {"Authorization": f"Bearer {created.json()['token']}"}
+            with patch(
+                "app.send_transaction_otp_sms",
+                side_effect=OtpDeliveryError(
+                    "Africa's Talking SMS is not configured."
+                ),
+            ):
+                started = self.client.post(
+                    "/api/momo/transaction/initiate",
+                    headers=headers,
+                    json={
+                        "transaction_type": "CASH_OUT",
+                        "amount": 1,
+                        "recipient": "BANK-ACC-7001",
+                        "device_id": "browser-device-1",
+                    },
+                )
+
+        self.assertEqual(started.status_code, 503, started.text)
+        self.assertIn("SMS is not configured", started.json()["detail"])
+        connection = database.get_connection()
+        try:
+            sessions = connection.execute(
+                "SELECT COUNT(*) AS count FROM momo_sessions"
+            ).fetchone()["count"]
+        finally:
+            connection.close()
+        self.assertEqual(sessions, 0)
 
     def test_existing_wallet_can_set_code_after_wallet_pin_confirmation(self):
         database.create_sandbox_customer_profile(
@@ -1494,38 +1765,3 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
                 "step_up_code_hash"
             ],
         )
-
-
-class StepUpCredentialTests(unittest.TestCase):
-    def test_passport_or_saved_security_code_can_authenticate_step_up(self):
-        from services import momo_simulator
-
-        session = {
-            "status": "STEP_UP",
-            "customer_ref": "0241001001",
-            "live_mtn": False,
-        }
-        passport_customer = {
-            "id_type": "PASSPORT",
-            "id_hash": auth.hash_password("PTEST84521"),
-            "step_up_code_hash": auth.hash_password("654321"),
-        }
-        momo_simulator._verify_step_up_credential(
-            passport_customer, session, "P-TEST-84521", "PASSPORT"
-        )
-        momo_simulator._verify_step_up_credential(
-            passport_customer, session, "654321", "SECURITY_CODE"
-        )
-
-        with self.assertRaisesRegex(ValueError, "Incorrect security code"):
-            momo_simulator._verify_step_up_credential(
-                passport_customer, session, "000000", "SECURITY_CODE"
-            )
-        with self.assertRaisesRegex(ValueError, "Incorrect passport number"):
-            momo_simulator._verify_step_up_credential(
-                passport_customer, session, "wrong", "PASSPORT"
-            )
-        with self.assertRaisesRegex(ValueError, "not available"):
-            momo_simulator._verify_step_up_credential(
-                {"id_type": "GHANA_CARD"}, session, "GHA-12345", "PASSPORT"
-            )

@@ -80,6 +80,12 @@ from services.email_service import (
     get_smtp_config,
     send_email_verification_email,
 )
+from services.otp_delivery import (
+    OtpDeliveryError,
+    hash_one_time_code,
+    verify_one_time_code,
+)
+from services.sms_service import send_transaction_otp_sms
 from services.kyc_service import (
     get_all_subscribers,
     find_subscriber,
@@ -738,12 +744,12 @@ def momo_customer_register(
         raise HTTPException(status_code=400, detail="Enter a valid email address.")
     if not re.fullmatch(r"\d{4}", pin):
         raise HTTPException(status_code=400, detail="Choose a four-digit demo wallet PIN.")
-    if not re.fullmatch(r"\d{6}", security_code):
+    if security_code and not re.fullmatch(r"\d{6}", security_code):
         raise HTTPException(
             status_code=400,
-            detail="Choose a six-digit MEDIUM-risk security code.",
+            detail="Security code must contain six digits.",
         )
-    if security_code == pin:
+    if security_code and security_code == pin:
         raise HTTPException(
             status_code=400,
             detail="Choose a security code that is different from your wallet PIN.",
@@ -767,7 +773,9 @@ def momo_customer_register(
             id_hash=auth.hash_password(id_number),
             email=email_address,
             pin_hash=auth.hash_password(pin),
-            step_up_code_hash=auth.hash_password(security_code),
+            step_up_code_hash=(
+                auth.hash_password(security_code) if security_code else None
+            ),
             privacy_notice_version=PUBLIC_PILOT_PRIVACY_NOTICE_VERSION,
             privacy_consent_at=datetime.now(timezone.utc).isoformat(),
         )
@@ -1620,6 +1628,7 @@ def momo_transaction_initiate(
                 else body.get("scenario", "NORMAL")
             ),
             live_mtn=live_mtn,
+            otp_sms_sender=send_transaction_otp_sms,
         )
         if is_customer_session:
             record_customer_security_signal(
@@ -1643,6 +1652,8 @@ def momo_transaction_initiate(
         return session
     except HTTPException:
         raise
+    except OtpDeliveryError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
@@ -1689,10 +1700,12 @@ def momo_transaction_verify(
             body["session_id"],
             body["code"],
             step_up=bool(body.get("step_up", False)),
-            step_up_method=body.get("step_up_method", "EMAIL"),
+            step_up_method=body.get("step_up_method", "EMAIL_OTP"),
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except OtpDeliveryError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except HTTPException:
         raise
     except Exception as error:
@@ -1769,7 +1782,9 @@ def momo_customer_email_challenge(
         )
     _EMAIL_VERIFICATION_CHALLENGES[customer_key] = {
         "email": email_address,
-        "code": code,
+        "code_hash": hash_one_time_code(
+            code, f"email-verification:{customer_key}"
+        ),
         "expires_at": now + timedelta(minutes=10),
         "resend_after": now + timedelta(seconds=60),
         "attempts": 0,
@@ -1798,7 +1813,11 @@ def momo_customer_email_verify(
     code = str(body.get("code") or "").strip()
     if email_address != challenge["email"]:
         raise HTTPException(status_code=400, detail="Email address does not match the challenge.")
-    if not secrets.compare_digest(code, challenge["code"]):
+    if not verify_one_time_code(
+        code,
+        challenge["code_hash"],
+        f"email-verification:{customer_key}",
+    ):
         challenge["attempts"] += 1
         if challenge["attempts"] >= 5:
             _EMAIL_VERIFICATION_CHALLENGES.pop(customer_key, None)

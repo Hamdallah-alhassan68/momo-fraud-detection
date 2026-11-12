@@ -69,6 +69,7 @@ export default function MomoSimulator() {
   const [securityMode, setSecurityMode] = useState(null);
   const [securityCode, setSecurityCode] = useState("");
   const [securityInfo, setSecurityInfo] = useState("");
+  const [stepUpMethod, setStepUpMethod] = useState("EMAIL_OTP");
 
   useEffect(() => {
     fetch(`${API_URL}/api/momo/customers`)
@@ -200,6 +201,7 @@ export default function MomoSimulator() {
             session_id: session.session_id,
             code,
             step_up: isStepUp,
+            ...(isStepUp ? { step_up_method: stepUpMethod } : {}),
           }),
         }
       );
@@ -210,6 +212,7 @@ export default function MomoSimulator() {
       if (data.status === "STEP_UP_REQUIRED") {
         setSession((current) => ({ ...current, ...data }));
         setCode("");
+        setStepUpMethod("EMAIL_OTP");
         setStep("stepup");
       } else {
         setResult(data);
@@ -710,6 +713,9 @@ export default function MomoSimulator() {
                     : "Enter the OTP you received"}
                   <input
                     required
+                    type={session.verification_method === "OTP" ? "password" : "text"}
+                    inputMode="numeric"
+                    autoComplete={session.verification_method === "OTP" ? "one-time-code" : "off"}
                     value={code}
                     maxLength={session.verification_method === "PIN" ? 4 : 6}
                     onChange={(e) => setCode(e.target.value)}
@@ -717,7 +723,8 @@ export default function MomoSimulator() {
                   />
                 </label>
 
-                <div className="credential-autofill-box">
+                {session.verification_method === "PIN" && session.demo_hint && (
+                  <div className="credential-autofill-box">
                   <p className="demo-hint">
                     Required {session.verification_method}: <strong>{session.demo_hint}</strong>
                   </p>
@@ -728,7 +735,8 @@ export default function MomoSimulator() {
                   >
                     Quick-fill {session.verification_method} ({session.demo_hint})
                   </button>
-                </div>
+                  </div>
+                )}
 
                 {error && <p className="momo-error">{error}</p>}
 
@@ -745,12 +753,8 @@ export default function MomoSimulator() {
                 <h2>Extra security check</h2>
                 <p className="momo-note">
                   Our fraud engine flagged risk signals on this transaction.
-                  Complete the extra check using the email already registered
-                  to this demo account. SMS is not used for this step-up.
-                </p>
-                <p className="demo-hint">
-                  Simulated email to <strong>{session.verification_destination}</strong>.
-                  No email was actually sent.
+                  Enter the one-time code sent to{" "}
+                  {session.masked_email || "your verified email address"}.
                 </p>
 
                 <ul className="stepup-reasons">
@@ -760,33 +764,24 @@ export default function MomoSimulator() {
                 </ul>
 
                 <label>
-                  Code from simulated email
                   <input
                     required
+                    aria-label="Six-digit email verification code"
+                    type="password"
+                    inputMode="numeric"
                     value={code}
                     maxLength={6}
-                    onChange={(e) => setCode(e.target.value)}
-                    placeholder="••••••"
+                    onChange={(e) =>
+                      setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+                    }
+                    placeholder="Six-digit email code"
                   />
                 </label>
-
-                <div className="credential-autofill-box">
-                  <p className="demo-hint">
-                    Demo email code: <strong>{session.demo_hint}</strong>
-                  </p>
-                  <button
-                    type="button"
-                    className="autofill-code-btn"
-                    onClick={() => setCode(session.demo_hint)}
-                  >
-                    Quick-fill Email Code ({session.demo_hint})
-                  </button>
-                </div>
 
                 {error && <p className="momo-error">{error}</p>}
 
                 <button type="submit" className="send-button" disabled={loading}>
-                  {loading ? "Verifying…" : "Verify email code"}
+                  {loading ? "Verifying…" : "Verify"}
                 </button>
               </form>
             )}

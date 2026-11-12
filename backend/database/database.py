@@ -491,6 +491,8 @@ def initialize_database():
 
             otp_code TEXT,
 
+            otp_expires_at TEXT,
+
             device_id TEXT,
 
             ip_address TEXT,
@@ -550,8 +552,29 @@ def initialize_database():
     )
     cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS momo_otp_delivery_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_ref TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_momo_otp_attempts_customer_time
+        ON momo_otp_delivery_attempts(customer_ref, created_at)
+        """
+    )
+    cursor.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_customer_security_history
         ON customer_security_signals(customer_ref, trusted, observed_at)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_momo_sessions_recent_otp
+        ON momo_sessions(customer_ref, verification_method, created_at)
         """
     )
     # ==================================================
@@ -636,6 +659,7 @@ def initialize_database():
     _ensure_column(connection, "momo_sessions", "location_longitude", "REAL")
     _ensure_column(connection, "momo_sessions", "risk_signals", "TEXT")
     _ensure_column(connection, "momo_sessions", "assessment_reasons", "TEXT")
+    _ensure_column(connection, "momo_sessions", "otp_expires_at", "TEXT")
     _ensure_column(
         connection, "sandbox_customer_profiles", "privacy_notice_version", "TEXT"
     )
@@ -1607,6 +1631,7 @@ def create_momo_session(
     live_mtn: int = 0,
     location_latitude=None,
     location_longitude=None,
+    otp_expires_at=None,
 ):
     """Create an in-flight transaction session for the simulated MoMo flow."""
     connection = get_connection()
@@ -1623,6 +1648,7 @@ def create_momo_session(
             recipient,
             verification_method,
             otp_code,
+            otp_expires_at,
             device_id,
             ip_address,
             scenario,
@@ -1633,7 +1659,7 @@ def create_momo_session(
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
         """,
         (
             session_id,
@@ -1643,6 +1669,7 @@ def create_momo_session(
             recipient,
             verification_method,
             otp_code,
+            otp_expires_at,
             device_id,
             ip_address,
             scenario,
@@ -1729,6 +1756,41 @@ def count_velocity_sessions(customer_ref, window_minutes=3):
         )
         result = cursor.fetchone()
         return int(result["count"])
+    finally:
+        connection.close()
+
+
+def reserve_otp_delivery_attempt(customer_ref, limit=3, window_minutes=10):
+    """Atomically enforce the per-wallet OTP delivery rate limit."""
+    connection = get_connection()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        now = datetime.now(timezone.utc)
+        since = now - timedelta(minutes=window_minutes)
+        connection.execute(
+            "DELETE FROM momo_otp_delivery_attempts WHERE created_at < ?",
+            ((now - timedelta(days=1)).isoformat(),),
+        )
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM momo_otp_delivery_attempts
+            WHERE customer_ref = ? AND created_at >= ?
+            """,
+            (customer_ref, since.isoformat()),
+        ).fetchone()
+        if int(row["count"] if row else 0) >= limit:
+            connection.rollback()
+            return False
+        connection.execute(
+            """
+            INSERT INTO momo_otp_delivery_attempts(customer_ref, created_at)
+            VALUES (?, ?)
+            """,
+            (customer_ref, now.isoformat()),
+        )
+        connection.commit()
+        return True
     finally:
         connection.close()
 

@@ -49,14 +49,18 @@ Keep the service at one instance while using its SQLite database and
 in-process event stream.
 
 The Blueprint selects MTN sandbox and disables the bundled demo-admin accounts
-for hosted deployments. Set SMTP settings in Render only if using optional
-email-ownership verification. MEDIUM-risk transfer verification uses the
-security code selected at signup, not an emailed transaction code. Use a
-dedicated SMTP sender/mailbox and verify its domain authentication before
-testing email delivery. Provision named
-analyst/admin users through the protected operator workflow; never publish
-operator or MTN credentials. Keep MTN sandbox selected while public testers
-are using the application.
+for hosted deployments. Configure Africa's Talking and SMTP secrets in Render
+before inviting testers. CASH_IN and CASH_OUT authorization codes are sent by
+SMS to the enrolled wallet phone; MEDIUM-risk authorization codes are sent to
+the wallet's verified email. Both codes are generated server-side, hashed
+before storage, expire after 10 minutes (SMS) or 5 minutes (email), and are
+never returned by the API or shown in the interface. SMS requests are limited
+to three per wallet per ten minutes; five incorrect attempts block that code.
+Use a dedicated SMTP sender/mailbox and verify its domain authentication.
+Verify each tester's email in the app before testing MEDIUM-risk flows.
+Provision named analyst/admin users through the protected operator workflow;
+never publish operator or MTN credentials. Keep MTN sandbox selected while
+public testers are using the application.
 Production Disbursement requires separate MTN production credentials and an
 explicit, private operator setup; do not enable it for a public testing site.
 The hosted Blueprint sets `MOMO_SIMULATION_ONLY=true`: wallet transfers change
@@ -86,14 +90,17 @@ never put these secrets in Vercel's `VITE_*` variables, which are exposed to
 the browser. `MOMO_MODEL_DIR` is optional if the default
 `backend/models/paysim-runtime` artifacts are included with the backend.
 
-Before inviting testers, set the required Render secrets in its dashboard and
-obtain MTN-issued sandbox test numbers for wallet enrollment. MTN API
+Before inviting testers, set the Render secrets requested by the Blueprint.
+Create an Africa's Talking account, obtain its API username and key, start with
+its sandbox environment, and verify SMS delivery to the intended Ghana test
+numbers. A production SMS account may require sender-ID approval and prepaid
+SMS credits; do not put its API key in the frontend or chat. Configure SMTP
+with a verified sender and test the email-verification and MEDIUM-risk email
+flows. These delivery channels are separate from MTN sandbox; MTN API
 credentials and a callback URL are not needed while the hosted app is
-simulation-only. Verify SMTP delivery only if optional email-ownership
-verification is enabled; SMTP is not needed for MEDIUM-risk transfer
-verification. The frontend and backend must use the exact deployed origins and
-HTTPS URLs. Never send provider credentials in chat or commit them to the
-repository.
+simulation-only. The frontend and backend must use the exact deployed origins
+and HTTPS URLs.
+Never send provider credentials in chat or commit them to the repository.
 
 Complete a privacy/legal review before a public pilot. The Ghana Data
 Protection Commission's [registration guidance](https://dpc.gov.gh/registration)
@@ -101,6 +108,23 @@ states that data controllers and processors must register; confirm whether and
 how that applies to the pilot with the Commission or qualified counsel.
 Synthetic identity details do not remove obligations for any real email
 address, IP address, or device identifier.
+
+For an invited first pilot, start with 5–10 consenting testers using about two
+devices each (roughly 10–20 devices). Include repeat transactions on a familiar
+device/network, a new device on the same network, and a familiar device on a
+changed network. Use only fictional identity data and tester-controlled email
+and phone endpoints. This pilot size is for workflow and integration feedback,
+not statistical validation of fraud-detection performance. Keep each session
+small enough to observe failures and collect consented feedback; do not
+interpret a handful of test transactions as evidence of model accuracy.
+
+For latency, record backend request duration and provider delivery time
+separately. A server-side SMS or email provider round trip is an external
+network wait and cannot be made instantaneous by optimizing the risk model.
+Keep SMS/email calls off wallet-to-wallet initiation and ordinary LOW-risk
+verification paths. Before changing model or database behavior, benchmark the
+deployed app under the expected pilot concurrency and use the measured hot
+path to guide changes.
 
 The pilot operator must record a close date and schedule data removal. Delete
 the hosted SQLite database no later than 30 days after that date, and account
@@ -118,11 +142,11 @@ The sandbox customer flow supports sign-in to the bundled demo registry or
 direct enrollment of a new sandbox wallet. Enrollment requires acceptance of
 the sandbox privacy notice and collects a fictional name, MTN-issued sandbox
 test number, synthetic passport/Ghana Card identifier, controlled test email,
-demo PIN, and a separate six-digit security code. Do not enter real identity
-documents or another person's data.
-Email is stored without ownership verification at registration; the
-passport/ID value, PIN, and security code are stored as salted hashes. This
-prototype does not validate documents with an official identity provider.
+and demo PIN. Do not enter real identity documents or another person's data.
+Email is unverified at registration; verify an email you control in the app
+before using MEDIUM-risk step-up. The passport/ID value and PIN are stored as
+salted hashes. This prototype does not validate documents with an official
+identity provider.
 Customers can delete
 their sandbox profile and security-signal history in the UI. Linked
 transaction/audit records remain until the pilot database is erased, no later
@@ -136,7 +160,10 @@ On the hosted simulation-only pilot, transactions update only demo balances
 and never call MTN. A separately configured local environment may use MTN
 Disbursement sandbox (`sandbox` target, EUR).
 Bank-to-wallet and wallet-to-bank flows are local simulations only and use a
-demo OTP; they do not call MTN or move money.
+six-digit OTP sent by SMS to the enrolled wallet phone; they do not call MTN
+or move money. Configure Africa's Talking and use a deliverable Ghana test
+number before testing these flows. Codes expire after 10 minutes and are
+never returned by the API or shown in the interface.
 
 The fraud layer learns behavioral baselines only from completed transactions.
 Device identity is a persistent browser-generated ID and IP is the address
@@ -148,12 +175,10 @@ with previously trusted enrollment/successful-transfer signals. IP may identify
 a reverse proxy when deployed behind one. These signals do not provide carrier
 or SIM-swap data. Signal values are not shown in the customer UI.
 HIGH-risk transactions are blocked. MEDIUM-risk transfers require the saved
-six-digit security code or, for passport profiles, the registered synthetic
-passport number. The security code is stored as a salted password hash, is
-never emailed, and is requested only after a transaction is rated MEDIUM.
-Existing self-enrolled wallets without a code can set one in the transfer
-screen after confirming their wallet PIN. Enrollment does not require email
-ownership verification. SMTP is not required for MEDIUM-risk step-up.
+six-digit one-time code sent to the verified wallet email. The code is
+server-generated, stored as a keyed hash, expires after five minutes, and is
+single-use. It is not returned by the API, stored in the email outbox, or
+shown in the interface. SMTP must be configured for MEDIUM-risk step-up.
 
 The frontend does not impose an arbitrary amount cap. The backend enforces the
 provider environment's configured transfer limit (EUR 10,000 for this sandbox

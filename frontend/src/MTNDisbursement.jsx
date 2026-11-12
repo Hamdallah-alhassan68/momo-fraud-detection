@@ -147,12 +147,10 @@ export default function MTNDisbursement() {
   const [customerView, setCustomerView] = useState("signin");
   const [loginNumber, setLoginNumber] = useState("");
   const [loginPin, setLoginPin] = useState("");
-  const [securityCodeConfirmation, setSecurityCodeConfirmation] = useState("");
-  const [securitySetupPin, setSecuritySetupPin] = useState("");
-  const [securitySetupCode, setSecuritySetupCode] = useState("");
-  const [securitySetupConfirmation, setSecuritySetupConfirmation] = useState("");
-  const [securitySetupMessage, setSecuritySetupMessage] = useState("");
-  const [securitySetupError, setSecuritySetupError] = useState("");
+  const [verificationEmail, setVerificationEmail] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [emailChallengeStarted, setEmailChallengeStarted] = useState(false);
+  const [emailVerificationMessage, setEmailVerificationMessage] = useState("");
   const [registration, setRegistration] = useState({
     phone_number: "",
     full_name: "",
@@ -160,7 +158,6 @@ export default function MTNDisbursement() {
     id_number: "",
     email: "",
     pin: "",
-    security_code: "",
   });
   const [privacyNoticeAccepted, setPrivacyNoticeAccepted] = useState(false);
   const [shareCoarseLocation, setShareCoarseLocation] = useState(false);
@@ -186,7 +183,7 @@ export default function MTNDisbursement() {
   const [session, setSession] = useState(null);
   const [authPin, setAuthPin] = useState("");
   const [stepUpInput, setStepUpInput] = useState("");
-  const [stepUpMethod, setStepUpMethod] = useState("SECURITY_CODE");
+  const [stepUpMethod, setStepUpMethod] = useState("EMAIL_OTP");
   const [stepUpChallenge, setStepUpChallenge] = useState(null);
   const [receipt, setReceipt] = useState(null);
 
@@ -377,74 +374,8 @@ export default function MTNDisbursement() {
     }
   }
 
-  async function handleSetSecurityCode(event) {
-    event.preventDefault();
-    setSecuritySetupError("");
-    setSecuritySetupMessage("");
-    if (!/^\d{6}$/.test(securitySetupCode)) {
-      setSecuritySetupError("Choose a six-digit security code.");
-      return;
-    }
-    if (securitySetupCode !== securitySetupConfirmation) {
-      setSecuritySetupError("The security codes do not match.");
-      return;
-    }
-    if (securitySetupCode === securitySetupPin) {
-      setSecuritySetupError("Choose a code different from your wallet PIN.");
-      return;
-    }
-    setLoading(true);
-    try {
-      const response = await fetch(
-        `${API_URL}/api/momo/customer/security-code`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${customerToken}`,
-          },
-          body: JSON.stringify({
-            wallet_pin: securitySetupPin,
-            security_code: securitySetupCode,
-          }),
-        },
-      );
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.detail || "Could not save your security code.");
-      }
-      setCustomerAccount((current) =>
-        current ? { ...current, has_security_code: true } : current,
-      );
-      setSecuritySetupPin("");
-      setSecuritySetupCode("");
-      setSecuritySetupConfirmation("");
-      setSecuritySetupMessage(
-        "Security code saved. It will only be requested if a transaction is rated MEDIUM risk.",
-      );
-    } catch (setupError) {
-      setSecuritySetupError(
-        setupError.message || "Could not save your security code.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function handleRegistrationSubmit(event) {
     event.preventDefault();
-    if (!/^\d{6}$/.test(registration.security_code)) {
-      setError("Choose a six-digit MEDIUM-risk security code.");
-      return;
-    }
-    if (registration.security_code !== securityCodeConfirmation) {
-      setError("The MEDIUM-risk security codes do not match.");
-      return;
-    }
-    if (registration.security_code === registration.pin) {
-      setError("Choose a security code that is different from your wallet PIN.");
-      return;
-    }
     setLoading(true);
     setError("");
     setAccountNotice("");
@@ -482,14 +413,71 @@ export default function MTNDisbursement() {
         id_number: "",
         email: "",
         pin: "",
-        security_code: "",
-      });
-      setSecurityCodeConfirmation("");
+          });
       setPrivacyNoticeAccepted(false);
       setShareCoarseLocation(false);
       setCustomerView("signin");
     } catch (registrationError) {
       setError(registrationError.message || "Could not create sandbox wallet.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRequestEmailVerification(event) {
+    event.preventDefault();
+    setError("");
+    setEmailVerificationMessage("");
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/api/momo/customer/email/challenge`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `******`,
+        },
+        body: JSON.stringify({ email: verificationEmail }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Could not send verification email.");
+      setEmailChallengeStarted(true);
+      setEmailVerificationMessage(data.message);
+    } catch (verificationError) {
+      setError(verificationError.message || "Could not send verification email.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleVerifyEmail(event) {
+    event.preventDefault();
+    setError("");
+    setEmailVerificationMessage("");
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/api/momo/customer/email/verify`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `******`,
+        },
+        body: JSON.stringify({
+          email: verificationEmail,
+          code: verificationCode,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Email verification failed.");
+      setCustomerAccount((current) => ({
+        ...current,
+        email_verified: true,
+        masked_email: data.masked_email,
+      }));
+      setVerificationCode("");
+      setEmailChallengeStarted(false);
+      setEmailVerificationMessage("Email verified. MEDIUM-risk codes can now be sent here.");
+    } catch (verificationError) {
+      setError(verificationError.message || "Email verification failed.");
     } finally {
       setLoading(false);
     }
@@ -505,6 +493,10 @@ export default function MTNDisbursement() {
     setPrivacyNoticeAccepted(false);
     setShareCoarseLocation(false);
     setError("");
+    setVerificationEmail("");
+    setVerificationCode("");
+    setEmailChallengeStarted(false);
+    setEmailVerificationMessage("");
   }
 
   async function deleteSandboxAccount() {
@@ -638,9 +630,7 @@ export default function MTNDisbursement() {
       if (data.status === "STEP_UP_REQUIRED") {
         setStepUpChallenge(data);
         setStepUpInput("");
-        setStepUpMethod(
-          data.security_code_available ? "SECURITY_CODE" : "PASSPORT",
-        );
+        setStepUpMethod("EMAIL_OTP");
         setStep("stepup");
       } else {
         setReceipt(data);
@@ -671,7 +661,7 @@ export default function MTNDisbursement() {
   async function handleVerifyStepUp(e) {
     if (e) e.preventDefault();
     if (!stepUpInput.trim()) {
-      setError("Enter your security code or registered passport number.");
+      setError("Enter the six-digit code sent to your verified email.");
       return;
     }
 
@@ -1078,92 +1068,63 @@ export default function MTNDisbursement() {
                 No request is sent to MTN and no money moves.
               </div>
             )}
-
-            {step === "form" &&
-              customerAccount?.security_code_setup_available &&
-              !customerAccount.has_security_code && (
-              <section className="security-code-setup">
-                <h4>Set a MEDIUM-risk security code</h4>
+            {customerAccount && !customerAccount.email_verified && (
+              <section className="security-code-setup" aria-labelledby="email-verification-title">
+                <h4 id="email-verification-title">Verify your email for transaction security</h4>
                 <p>
-                  This existing wallet has no saved code yet. Confirm your
-                  wallet PIN and choose a separate six-digit code. It will
-                  only be requested when a transaction is rated MEDIUM risk.
+                  MEDIUM-risk transactions require a one-time code sent to your verified email.
+                  Use an address you control; the code is never shown in this app.
                 </p>
-                {securitySetupMessage && (
+                {emailVerificationMessage && (
                   <p className="security-code-setup-message" role="status">
-                    {securitySetupMessage}
+                    {emailVerificationMessage}
                   </p>
                 )}
-                {securitySetupError && (
-                  <p className="security-code-setup-error" role="alert">
-                    {securitySetupError}
-                  </p>
+                {!emailChallengeStarted ? (
+                  <form onSubmit={handleRequestEmailVerification} className="transaction-form">
+                    <label className="field-block">
+                      Email address
+                      <input
+                        type="email"
+                        required
+                        autoComplete="email"
+                        value={verificationEmail}
+                        onChange={(event) => setVerificationEmail(event.target.value)}
+                        className="standard-input"
+                      />
+                    </label>
+                    <button type="submit" className="primary-action-btn" disabled={loading}>
+                      {loading ? "Sending…" : "Send verification code"}
+                    </button>
+                  </form>
+                ) : (
+                  <form onSubmit={handleVerifyEmail} className="transaction-form">
+                    <label className="field-block">
+                      Six-digit email code
+                      <input
+                        type="password"
+                        required
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        maxLength={6}
+                        value={verificationCode}
+                        onChange={(event) =>
+                          setVerificationCode(
+                            event.target.value.replace(/\D/g, "").slice(0, 6),
+                          )
+                        }
+                        className="standard-input"
+                      />
+                    </label>
+                    <button
+                      type="submit"
+                      className="primary-action-btn"
+                      disabled={loading || verificationCode.length !== 6}
+                    >
+                      {loading ? "Verifying…" : "Verify email"}
+                    </button>
+                  </form>
                 )}
-                <form onSubmit={handleSetSecurityCode} className="transaction-form">
-                  <div className="field-block">
-                    <label htmlFor="security-setup-pin" className="field-label">
-                      Confirm wallet PIN
-                    </label>
-                    <input
-                      id="security-setup-pin"
-                      type="password"
-                      required
-                      inputMode="numeric"
-                      autoComplete="current-password"
-                      maxLength={4}
-                      value={securitySetupPin}
-                      onChange={(event) =>
-                        setSecuritySetupPin(
-                          event.target.value.replace(/\D/g, "").slice(0, 4),
-                        )
-                      }
-                      className="standard-input"
-                    />
-                  </div>
-                  <div className="field-block">
-                    <label htmlFor="security-setup-code" className="field-label">
-                      New six-digit security code
-                    </label>
-                    <input
-                      id="security-setup-code"
-                      type="password"
-                      required
-                      inputMode="numeric"
-                      autoComplete="new-password"
-                      maxLength={6}
-                      value={securitySetupCode}
-                      onChange={(event) =>
-                        setSecuritySetupCode(
-                          event.target.value.replace(/\D/g, "").slice(0, 6),
-                        )
-                      }
-                      className="standard-input"
-                    />
-                    <input
-                      aria-label="Confirm new six-digit security code"
-                      type="password"
-                      required
-                      inputMode="numeric"
-                      autoComplete="new-password"
-                      maxLength={6}
-                      value={securitySetupConfirmation}
-                      onChange={(event) =>
-                        setSecuritySetupConfirmation(
-                          event.target.value.replace(/\D/g, "").slice(0, 6),
-                        )
-                      }
-                      placeholder="Confirm security code"
-                      className="standard-input"
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    className="primary-action-btn"
-                    disabled={loading}
-                  >
-                    {loading ? "Saving…" : "Save security code"}
-                  </button>
-                </form>
               </section>
             )}
 
@@ -1345,8 +1306,7 @@ export default function MTNDisbursement() {
                         className="standard-input"
                       />
                       <p className="field-hint">
-                        This address is kept as a contact detail. Transaction
-                        step-up uses your security code or eligible passport.
+                        Verify this address before you use MEDIUM-risk transactions.
                       </p>
                     </div>
                     <div className="field-block">
@@ -1368,48 +1328,6 @@ export default function MTNDisbursement() {
                         }
                         className="standard-input"
                       />
-                    </div>
-                    <div className="field-block">
-                      <label htmlFor="register-security-code" className="field-label">
-                        Choose a separate six-digit security code
-                      </label>
-                      <input
-                        id="register-security-code"
-                        type="password"
-                        required
-                        inputMode="numeric"
-                        autoComplete="new-password"
-                        maxLength={6}
-                        value={registration.security_code}
-                        onChange={(event) =>
-                          setRegistration((current) => ({
-                            ...current,
-                            security_code: event.target.value.replace(/\D/g, "").slice(0, 6),
-                          }))
-                        }
-                        className="standard-input"
-                      />
-                      <input
-                        aria-label="Confirm six-digit security code"
-                        type="password"
-                        required
-                        inputMode="numeric"
-                        autoComplete="new-password"
-                        maxLength={6}
-                        value={securityCodeConfirmation}
-                        onChange={(event) =>
-                          setSecurityCodeConfirmation(
-                            event.target.value.replace(/\D/g, "").slice(0, 6),
-                          )
-                        }
-                        placeholder="Confirm security code"
-                        className="standard-input"
-                      />
-                      <p className="field-hint">
-                        This is a reusable security code, not an OTP. You’ll
-                        enter it only if a transaction is rated MEDIUM risk.
-                        Keep it different from your wallet PIN.
-                      </p>
                     </div>
                     <label className="location-required-note pilot-consent-control">
                       <input
@@ -1652,11 +1570,11 @@ export default function MTNDisbursement() {
                 ) : (
                   <div className="field-block">
                     <label htmlFor="demo-otp-input" className="field-label">
-                      Six-digit demo authorization code
+                      Six-digit code sent by SMS
                     </label>
                     <input
                       id="demo-otp-input"
-                      type="text"
+                      type="password"
                       inputMode="numeric"
                       autoComplete="one-time-code"
                       maxLength={6}
@@ -1666,15 +1584,6 @@ export default function MTNDisbursement() {
                       }
                       className="large-code-input"
                     />
-                    {session?.demo_hint && (
-                      <button
-                        type="button"
-                        className="quick-fill-link"
-                        onClick={() => setAuthPin(session.demo_hint)}
-                      >
-                        Use demo OTP: {session.demo_hint}
-                      </button>
-                    )}
                   </div>
                 )}
 
@@ -1739,70 +1648,24 @@ export default function MTNDisbursement() {
                   </div>
                 )}
 
-                {!stepUpChallenge.security_code_available && (
-                  <div className="stepup-code-unavailable" role="status">
-                    <strong>No security code is saved for this wallet.</strong>{" "}
-                    {stepUpChallenge.passport_available
-                      ? "Use the registered passport number for this transaction."
-                      : "Contact the pilot operator; this wallet has no available step-up method."}
-                  </div>
-                )}
-
                 <form onSubmit={handleVerifyStepUp} className="stepup-form-body">
                   <div className="field-block">
-                    <div className="challenge-mode-tabs">
-                      {stepUpChallenge.security_code_available && (
-                        <button
-                          type="button"
-                          className={`mode-tab ${stepUpMethod === "SECURITY_CODE" ? "active" : ""}`}
-                          aria-pressed={stepUpMethod === "SECURITY_CODE"}
-                          onClick={() => {
-                            setStepUpMethod("SECURITY_CODE");
-                            setStepUpInput("");
-                          }}
-                        >
-                          Security code
-                        </button>
-                      )}
-                      {stepUpChallenge.passport_available && (
-                        <button
-                          type="button"
-                          className={`mode-tab ${stepUpMethod === "PASSPORT" ? "active" : ""}`}
-                          aria-pressed={stepUpMethod === "PASSPORT"}
-                          onClick={() => {
-                            setStepUpMethod("PASSPORT");
-                            setStepUpInput("");
-                          }}
-                        >
-                          Passport number
-                        </button>
-                      )}
-                    </div>
                     <label htmlFor="stepup-credential" className="field-label">
-                      {stepUpMethod === "SECURITY_CODE"
-                        ? "Enter your six-digit MEDIUM-risk security code"
-                        : "Enter the passport number registered to this wallet"}
+                      Enter the six-digit code sent to{" "}
+                      {stepUpChallenge.masked_email || "your verified email"}
                     </label>
                     <input
                       id="stepup-credential"
-                      type="text"
-                      inputMode={stepUpMethod === "SECURITY_CODE" ? "numeric" : "text"}
+                      type="password"
+                      inputMode="numeric"
                       autoComplete="off"
-                      maxLength={stepUpMethod === "SECURITY_CODE" ? 6 : 64}
+                      maxLength={6}
                       autoFocus
                       value={stepUpInput}
                       onChange={(e) =>
-                        setStepUpInput(
-                          stepUpMethod === "SECURITY_CODE"
-                            ? e.target.value.replace(/\D/g, "").slice(0, 6)
-                            : e.target.value,
-                        )
+                        setStepUpInput(e.target.value.replace(/\D/g, "").slice(0, 6))
                       }
-                      placeholder={
-                        stepUpMethod === "SECURITY_CODE"
-                          ? "Six-digit security code"
-                          : "Passport number"
-                      }
+                      placeholder="Six-digit email code"
                       className="large-code-input"
                     />
                   </div>
@@ -1821,8 +1684,7 @@ export default function MTNDisbursement() {
                       className="primary-action-btn"
                       disabled={
                         loading ||
-                        stepUpInput.length <
-                          (stepUpMethod === "SECURITY_CODE" ? 6 : 4)
+                        stepUpInput.length < 6
                       }
                     >
                       {loading ? "Verifying..." : "Verify & Authorize"}
@@ -1935,6 +1797,14 @@ export default function MTNDisbursement() {
                         >
                           {receipt.risk_level || "UNKNOWN"}
                         </span>
+                      </div>
+                      <div className="receipt-data-row">
+                        <span>Risk Score:</span>
+                        <strong>
+                          {receipt.risk_score != null
+                            ? `${(Number(receipt.risk_score) * 100).toFixed(0)}%`
+                            : "Unavailable"}
+                        </strong>
                       </div>
                       {receipt.reasons?.length > 0 && (
                         <div className="reasons-block">
