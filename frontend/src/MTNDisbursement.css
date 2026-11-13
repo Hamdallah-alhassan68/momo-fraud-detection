@@ -1014,6 +1014,30 @@
   gap: 16px;
 }
 
+.stepup-method-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.stepup-method-options .mode-tab.active {
+  background: #ffcc00;
+  border-color: #d9a900;
+  color: #111827;
+}
+
+.stepup-method-options .mode-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.stepup-method-note {
+  margin: 0;
+  color: #92400e;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
 .stepup-header-box {
   display: flex;
   align-items: flex-start;

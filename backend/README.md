@@ -52,14 +52,18 @@ The Blueprint selects MTN sandbox and disables the bundled demo-admin accounts
 for hosted deployments. Configure Africa's Talking and SMTP secrets in Render
 before inviting testers. CASH_IN and CASH_OUT authorization codes are sent by
 SMS to the enrolled wallet phone; MEDIUM-risk authorization codes are sent to
-the wallet's verified email. Both codes are generated server-side, hashed
+the wallet's saved email when the customer chooses email verification. The
+customer can instead verify using the passport/ID number saved on the wallet.
+Email verification codes are sent only after the email option is selected.
+Both codes are generated server-side, hashed
 before storage, expire after 10 minutes (SMS) or 5 minutes (email), and are
 never returned by the API or shown in the interface. SMS requests are limited
 to three per wallet per ten minutes; five incorrect attempts block that code.
 Use a dedicated SMTP sender/mailbox and verify its domain authentication.
-After signing in, testers can select **Send code to my email**; the code goes
-to the email saved on that wallet, and the app displays only a masked address.
-Verify each tester's email before testing MEDIUM-risk flows.
+For MEDIUM-risk flows, the wallet UI offers email code or passport/ID
+verification; entering the correct factor continues the pending simulation
+transfer. The email address is shown masked and need not be separately verified
+before the one-time-code challenge.
 Provision named analyst/admin users through the protected operator workflow;
 never publish operator or MTN credentials. Keep MTN sandbox selected while
 public testers are using the application.
@@ -97,11 +101,11 @@ Create an Africa's Talking account, obtain its API username and key, start with
 its sandbox environment, and verify SMS delivery to the intended Ghana test
 numbers. A production SMS account may require sender-ID approval and prepaid
 SMS credits; do not put its API key in the frontend or chat. Configure SMTP
-with a verified sender and test the email-verification and MEDIUM-risk email
-flows. These delivery channels are separate from MTN sandbox; MTN API
-credentials and a callback URL are not needed while the hosted app is
-simulation-only. The frontend and backend must use the exact deployed origins
-and HTTPS URLs.
+with a verified sender and test email-code authentication by choosing the email
+option in a MEDIUM-risk transaction. These delivery channels are separate from
+MTN sandbox; MTN API credentials and a callback URL are not needed while the
+hosted app is simulation-only. The frontend and backend must use the exact
+deployed origins and HTTPS URLs.
 Never send provider credentials in chat or commit them to the repository.
 
 Complete a privacy/legal review before a public pilot. The Ghana Data
@@ -145,9 +149,9 @@ direct enrollment of a new sandbox wallet. Enrollment requires acceptance of
 the sandbox privacy notice and collects a fictional name, MTN-issued sandbox
 test number, synthetic passport/Ghana Card identifier, controlled test email,
 and demo PIN. Do not enter real identity documents or another person's data.
-Email is unverified at registration; use the in-app email verification button
-to send a code to the address saved with the wallet before using MEDIUM-risk
-step-up. The passport/ID value and PIN are stored as
+Email is unverified at registration; MEDIUM-risk verification can send a
+one-time code to the saved email or validate the saved passport/ID. The
+passport/ID value and PIN are stored as
 salted hashes. This prototype does not validate documents with an official
 identity provider.
 Customers can delete

@@ -1099,6 +1099,103 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
         self.assertFalse(verified.json()["live_mtn"])
         get_client.assert_not_called()
 
+    def test_medium_risk_customer_can_choose_email_code_before_transfer(self):
+        assessment = {
+            "risk_score": 0.45,
+            "risk_level": "MEDIUM",
+            "decision": "STEP-UP VERIFICATION",
+            "isolation_forest_score": 0.2,
+            "rule_score": 0.45,
+            "reasons": ["New recipient"],
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "MTN_DISBURSEMENT_ENVIRONMENT": "sandbox",
+                "MOMO_SIMULATION_ONLY": "true",
+            },
+            clear=False,
+        ), patch.object(
+            self.momo_simulator.fraud_detector,
+            "assess_transaction",
+            return_value=assessment,
+        ), patch(
+            "services.momo_simulator.send_medium_risk_otp_email",
+            return_value=True,
+        ) as send_email:
+            created = self.client.post(
+                "/api/momo/customer/register",
+                json={
+                    "phone_number": self.phone,
+                    "full_name": "Fictional Test Customer",
+                    "id_type": "PASSPORT",
+                    "id_number": "TEST-ID-84521",
+                    "email": "pilot-customer@example.com",
+                    "pin": "4826",
+                    "device_id": "browser-device-1",
+                    "privacy_notice_accepted": True,
+                },
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            headers = {"Authorization": f"Bearer {created.json()['token']}"}
+            started = self.client.post(
+                "/api/momo/transaction/initiate",
+                headers=headers,
+                json={
+                    "transaction_type": "TRANSFER",
+                    "amount": 1,
+                    "recipient": "0242002002",
+                    "device_id": "browser-device-1",
+                },
+            )
+            self.assertEqual(started.status_code, 200, started.text)
+            verify_pin = self.client.post(
+                "/api/momo/transaction/verify",
+                headers=headers,
+                json={
+                    "session_id": started.json()["session_id"],
+                    "code": "4826",
+                },
+            )
+            self.assertEqual(verify_pin.status_code, 200, verify_pin.text)
+            self.assertEqual(verify_pin.json()["status"], "STEP_UP_REQUIRED")
+            self.assertEqual(
+                verify_pin.json()["available_methods"],
+                ["EMAIL_OTP", "PASSPORT"],
+            )
+            self.assertFalse(send_email.called)
+            self.assertEqual(
+                database.get_momo_session(started.json()["session_id"])["status"],
+                "STEP_UP",
+            )
+
+            email_challenge = self.client.post(
+                f"/api/momo/transaction/{started.json()['session_id']}/step-up/email",
+                headers=headers,
+            )
+            self.assertEqual(email_challenge.status_code, 200, email_challenge.text)
+            self.assertEqual(
+                send_email.call_args.args[0],
+                "pilot-customer@example.com",
+            )
+            email_code = send_email.call_args.args[1]
+            self.assertNotIn(email_code, email_challenge.text)
+
+            verified = self.client.post(
+                "/api/momo/transaction/verify",
+                headers=headers,
+                json={
+                    "session_id": started.json()["session_id"],
+                    "code": email_code,
+                    "step_up": True,
+                    "step_up_method": "EMAIL_OTP",
+                },
+            )
+
+        self.assertEqual(verified.status_code, 200, verified.text)
+        self.assertEqual(verified.json()["status"], "APPROVED")
+        self.assertEqual(verified.json()["risk_level"], "MEDIUM")
+
     def test_cash_out_sends_hashed_sms_otp_without_returning_it(self):
         registration = {
             "phone_number": self.phone,

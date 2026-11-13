@@ -11,6 +11,7 @@ The balances and credentials here are DEMO simulation data only.
 """
 
 import ipaddress
+import hmac
 import json
 import re
 import secrets
@@ -696,16 +697,27 @@ def verify_transaction(
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         if datetime.now(timezone.utc) > expires_at:
-            update_momo_session_status(
-                session_id,
-                "EXPIRED",
-                otp_code=None,
-                otp_expires_at=None,
-                reason="Transaction verification code expired",
-            )
-            raise ValueError(
-                "This verification code expired. Start a new transaction."
-            )
+            if session["status"] == "STEP_UP":
+                update_momo_session_status(
+                    session_id,
+                    "STEP_UP",
+                    otp_code=None,
+                    otp_expires_at=None,
+                    reason="Email verification code expired",
+                )
+                session["otp_code"] = None
+                session["otp_expires_at"] = None
+            else:
+                update_momo_session_status(
+                    session_id,
+                    "EXPIRED",
+                    otp_code=None,
+                    otp_expires_at=None,
+                    reason="Transaction verification code expired",
+                )
+                raise ValueError(
+                    "This verification code expired. Start a new transaction."
+                )
 
     if session["status"] not in ("PENDING", "STEP_UP"):
         raise ValueError(
@@ -713,7 +725,7 @@ def verify_transaction(
         )
     if session["status"] == "STEP_UP" and not step_up:
         raise ValueError(
-            "A MEDIUM-risk email verification code is required."
+            "Choose email or passport/ID verification to complete this MEDIUM-risk transaction."
         )
 
     customer = _ensure_customer(session["customer_ref"])
@@ -730,17 +742,36 @@ def verify_transaction(
             raise ValueError(
                 "This transaction does not require step-up verification."
             )
+        method = str(step_up_method or "").upper()
+        if method not in ("EMAIL_OTP", "PASSPORT", "ID"):
+            raise ValueError("Choose email or passport/ID verification.")
+        if method == "EMAIL_OTP" and not session.get("otp_code"):
+            raise ValueError("Choose Email and request a verification code first.")
         try:
-            if str(step_up_method or "").upper() != "EMAIL_OTP":
-                raise ValueError(
-                    "Use the one-time code sent to your verified email."
+            if method == "EMAIL_OTP":
+                code_matches = verify_one_time_code(
+                    str(code).strip(),
+                    session.get("otp_code"),
+                    f"step-up:{session_id}",
                 )
-            if not verify_one_time_code(
-                str(code).strip(),
-                session.get("otp_code"),
-                f"step-up:{session_id}",
-            ):
-                raise ValueError("Incorrect email code. Please try again.")
+                failure_message = "Incorrect email code. Please try again."
+            elif method in ("PASSPORT", "ID"):
+                identity_value = re.sub(
+                    r"[\s-]", "", str(code or "")
+                ).upper()
+                identity_hash = customer.get("id_hash")
+                saved_identity = re.sub(
+                    r"[\s-]", "", str(customer.get("id_number") or "")
+                ).upper()
+                code_matches = (
+                    verify_password(identity_value, identity_hash)
+                    if identity_hash
+                    else bool(saved_identity)
+                    and hmac.compare_digest(identity_value, saved_identity)
+                )
+                failure_message = "Passport or ID number does not match this wallet."
+            if not code_matches:
+                raise ValueError(failure_message)
         except ValueError:
             attempts = int(session.get("step_up_count") or 0) + 1
             update_momo_session_status(
@@ -770,7 +801,7 @@ def verify_transaction(
             )
         elif method == "OTP" and session.get("status") == "STEP_UP":
             raise ValueError(
-                "A MEDIUM-risk email code is required. Start a new transaction."
+                "Choose email or passport/ID verification for this MEDIUM-risk transaction."
             )
         else:
             code_matches = (
@@ -1061,6 +1092,60 @@ def verify_transaction(
     return outcome
 
 
+def request_step_up_email(session_id):
+    """Send an email code only after the wallet owner chooses email verification."""
+    session = get_momo_session(session_id)
+    if session is None:
+        raise ValueError("Transaction session not found or already expired.")
+    if session.get("status") != "STEP_UP":
+        raise ValueError("This transaction is not waiting for step-up verification.")
+
+    customer = _ensure_customer(session["customer_ref"])
+    email_address = str(customer.get("email") or "").strip()
+    if (
+        "@" not in email_address
+        or "." not in email_address.partition("@")[2]
+        or email_address.lower().endswith("@example.test")
+    ):
+        raise OtpDeliveryError(
+            "A deliverable email address is not available for this wallet. Choose passport/ID verification."
+        )
+
+    now = datetime.now(timezone.utc)
+    if session.get("otp_code") and session.get("otp_expires_at"):
+        expires_at = datetime.fromisoformat(
+            session["otp_expires_at"].replace("Z", "+00:00")
+        )
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        sent_at = expires_at - timedelta(minutes=5)
+        if now < sent_at + timedelta(seconds=60):
+            raise ValueError("Wait before requesting another email code.")
+
+    email_code = f"{secrets.randbelow(1_000_000):06d}"
+    send_medium_risk_otp_email(
+        email_address,
+        email_code,
+        {
+            "amount": session["amount"],
+            "transaction_type": session["transaction_type"],
+        },
+    )
+    update_momo_session_status(
+        session_id,
+        "STEP_UP",
+        otp_code=hash_one_time_code(email_code, f"step-up:{session_id}"),
+        otp_expires_at=(now + timedelta(minutes=5)).isoformat(),
+        reason="Email verification code sent",
+    )
+    return {
+        "sent": True,
+        "masked_email": _mask_email(email_address),
+        "message": f"A verification code was sent to {_mask_email(email_address)}.",
+        "expires_in_seconds": 300,
+    }
+
+
 def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
                       signals, amount, dest_ref, origin_ref, origin_new, dest_new,
                       session_status, session_otp, ip_address, device_id,
@@ -1075,63 +1160,16 @@ def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
         )
 
     if risk_level == "MEDIUM":
+        email_address = str((customer or {}).get("email") or "").strip()
         email_available = bool(
-            customer
-            and customer.get("email_verified")
-            and customer.get("email")
-            and not customer["email"].lower().endswith("@example.test")
+            "@" in email_address
+            and "." in email_address.partition("@")[2]
+            and not email_address.lower().endswith("@example.test")
         )
-        if not email_available:
-            _finalize(
-                "BLOCKED", "STEP_UP_UNAVAILABLE", transaction, assessment,
-                ip_address, device_id
-            )
-            update_momo_session_status(
-                session_id,
-                "BLOCKED",
-                risk_level=risk_level,
-                risk_score=assessment["risk_score"],
-                otp_code=None,
-                otp_expires_at=None,
-                reason="A verified email address is not available for MEDIUM-risk verification",
-            )
-            return {
-                "status": "BLOCKED",
-                "message": (
-                    "This transaction was blocked because no verification "
-                    "method is available. Verify a real email address on the "
-                    "wallet. Money has NOT left your wallet."
-                ),
-                "transaction_reference": reference,
-                "amount": amount,
-                "recipient": dest_ref,
-                "risk_score": assessment["risk_score"],
-                "risk_level": risk_level,
-                "decision": "STEP-UP UNAVAILABLE",
-                "reasons": assessment["reasons"],
-                "signals": signals,
-                "approved": False,
-            }
-
-        step_up_code = f"{secrets.randbelow(1_000_000):06d}"
-        try:
-            send_medium_risk_otp_email(
-                customer["email"],
-                step_up_code,
-                {
-                    "amount": amount,
-                    "transaction_type": transaction.get("transaction_type"),
-                },
-            )
-        except OtpDeliveryError:
-            update_momo_session_status(
-                session_id,
-                "EXPIRED",
-                otp_code=None,
-                otp_expires_at=None,
-                reason="MEDIUM-risk email verification could not be delivered",
-            )
-            raise
+        passport_available = bool(
+            (customer or {}).get("id_hash")
+            or (customer or {}).get("id_number")
+        )
         update_momo_session_status(
             session_id,
             "STEP_UP",
@@ -1140,10 +1178,8 @@ def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
             risk_score=assessment["risk_score"],
             risk_signals=json.dumps(signals, sort_keys=True),
             assessment_reasons=json.dumps(assessment["reasons"]),
-            otp_code=hash_one_time_code(step_up_code, f"step-up:{session_id}"),
-            otp_expires_at=(
-                datetime.now(timezone.utc) + timedelta(minutes=5)
-            ).isoformat(),
+            otp_code=None,
+            otp_expires_at=None,
         )
         events.publish(
             "transaction",
@@ -1152,13 +1188,21 @@ def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
         events.publish("stats", {"reason": "step_up_required"})
         return {
             "status": "STEP_UP_REQUIRED",
-            "message": "A one-time authorization code was sent to your verified email address.",
+            "message": "Choose how to verify your identity. This transaction is pending verification, not declined.",
             "session_id": session_id,
             "step_up": True,
-            "verification_method": "EMAIL_OTP",
-            "email_available": True,
-            "masked_email": _mask_email(customer["email"]),
-            "otp_expires_in_seconds": 300,
+            "verification_method": None,
+            "available_methods": [
+                method
+                for method, available in (
+                    ("EMAIL_OTP", email_available),
+                    ("PASSPORT", passport_available),
+                )
+                if available
+            ],
+            "email_available": email_available,
+            "passport_available": passport_available,
+            "masked_email": _mask_email(email_address) if email_available else None,
             "reasons": assessment["reasons"],
             "risk_score": assessment["risk_score"],
             "signals": signals,

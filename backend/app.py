@@ -70,6 +70,7 @@ from services.momo_simulator import (
     freeze_account as momo_freeze,
     get_customers as momo_customers,
     initiate_transaction as momo_initiate,
+    request_step_up_email as momo_request_step_up_email,
     unfreeze_account as momo_unfreeze,
     verify_transaction as momo_verify,
     check_mtn_transfer_status as momo_check_mtn_transfer_status,
@@ -1711,6 +1712,54 @@ def momo_transaction_verify(
     except Exception as error:
         logger.exception("MoMo transaction verification failed")
         raise HTTPException(status_code=500, detail="Unable to verify transaction.") from error
+
+
+@app.post("/api/momo/transaction/{session_id}/step-up/email")
+def momo_transaction_step_up_email(
+    session_id: str,
+    authorization: str | None = Header(default=None),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
+    session = get_momo_session(session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Transaction session not found or already expired.",
+        )
+    parts = authorization.split() if isinstance(authorization, str) else []
+    claims = (
+        auth.decode_access_token(parts[1])
+        if len(parts) == 2 and parts[0].lower() == "bearer"
+        else None
+    )
+    if claims and claims.get("role") == "momo_customer":
+        subscriber = _require_sandbox_customer(authorization)
+        owned_refs = {
+            str(subscriber.get("phone_number") or ""),
+            str(subscriber.get("customer_ref") or ""),
+        }
+        if str(session.get("customer_ref")) not in owned_refs:
+            raise HTTPException(
+                status_code=403,
+                detail="This sandbox transaction belongs to a different wallet.",
+            )
+    else:
+        require_analyst(
+            x_admin_token=x_admin_token,
+            authorization=authorization,
+        )
+    try:
+        return momo_request_step_up_email(session_id)
+    except OtpDeliveryError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        logger.exception("MEDIUM-risk email code request failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not send the verification email.",
+        ) from error
 
 
 @app.post("/api/momo/transaction/{session_id}/status")

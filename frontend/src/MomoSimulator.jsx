@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { API_URL } from "./adminApi.js";
+import { API_URL, adminFetch } from "./adminApi.js";
 import "./MomoSimulator.css";
 
 const TYPE_OPTIONS = [
@@ -69,7 +69,9 @@ export default function MomoSimulator() {
   const [securityMode, setSecurityMode] = useState(null);
   const [securityCode, setSecurityCode] = useState("");
   const [securityInfo, setSecurityInfo] = useState("");
-  const [stepUpMethod, setStepUpMethod] = useState("EMAIL_OTP");
+  const [stepUpMethod, setStepUpMethod] = useState("");
+  const [stepUpEmailSent, setStepUpEmailSent] = useState(false);
+  const [stepUpEmailMessage, setStepUpEmailMessage] = useState("");
 
   useEffect(() => {
     fetch(`${API_URL}/api/momo/customers`)
@@ -212,7 +214,9 @@ export default function MomoSimulator() {
       if (data.status === "STEP_UP_REQUIRED") {
         setSession((current) => ({ ...current, ...data }));
         setCode("");
-        setStepUpMethod("EMAIL_OTP");
+        setStepUpMethod("");
+        setStepUpEmailSent(false);
+        setStepUpEmailMessage("");
         setStep("stepup");
       } else {
         setResult(data);
@@ -226,6 +230,33 @@ export default function MomoSimulator() {
   }
 
   const available = customer?.balance ?? 0;
+
+  async function chooseStepUpMethod(method) {
+    setStepUpMethod(method);
+    setCode("");
+    setError("");
+    setStepUpEmailSent(false);
+    setStepUpEmailMessage("");
+    if (method !== "EMAIL_OTP") return;
+
+    setLoading(true);
+    try {
+      const response = await adminFetch(
+        `/api/momo/transaction/${session.session_id}/step-up/email`,
+        { method: "POST" },
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Could not send the verification email.");
+      }
+      setStepUpEmailSent(true);
+      setStepUpEmailMessage(data.message);
+    } catch (emailError) {
+      setError(emailError.message || "Could not send the verification email.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function submitSecurityAction(event) {
     event.preventDefault();
@@ -749,12 +780,11 @@ export default function MomoSimulator() {
               </form>
             )}
 {step === "stepup" && session && (
-              <form className="momo-form" onSubmit={(e) => confirmCode(e, true)}>
+              <form className="momo-form stepup-challenge-form" onSubmit={(e) => confirmCode(e, true)}>
                 <h2>Extra security check</h2>
                 <p className="momo-note">
-                  Our fraud engine flagged risk signals on this transaction.
-                  Enter the one-time code sent to{" "}
-                  {session.masked_email || "your verified email address"}.
+                  This MEDIUM-risk transaction is pending verification, not declined.
+                  Choose email or the passport/ID saved on the wallet.
                 </p>
 
                 <ul className="stepup-reasons">
@@ -763,24 +793,87 @@ export default function MomoSimulator() {
                   ))}
                 </ul>
 
-                <label>
-                  <input
-                    required
-                    aria-label="Six-digit email verification code"
-                    type="password"
-                    inputMode="numeric"
-                    value={code}
-                    maxLength={6}
-                    onChange={(e) =>
-                      setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
-                    }
-                    placeholder="Six-digit email code"
-                  />
-                </label>
+                <div className="stepup-method-options" role="group" aria-label="Choose verification method">
+                  <button
+                    type="button"
+                    className={`mode-tab ${stepUpMethod === "EMAIL_OTP" ? "active" : ""}`}
+                    disabled={loading || !session.email_available}
+                    onClick={() => chooseStepUpMethod("EMAIL_OTP")}
+                  >
+                    {stepUpEmailSent ? "Email code sent" : "Verify by email"}
+                  </button>
+                  <button
+                    type="button"
+                    className={`mode-tab ${stepUpMethod === "PASSPORT" ? "active" : ""}`}
+                    disabled={loading || !session.passport_available}
+                    onClick={() => chooseStepUpMethod("PASSPORT")}
+                  >
+                    Verify with passport / ID
+                  </button>
+                </div>
+                {!session.email_available && (
+                  <p className="momo-note">
+                    Email is unavailable for this demo wallet. Choose passport/ID verification.
+                  </p>
+                )}
+                {!session.passport_available && (
+                  <p className="momo-note">
+                    No passport/ID is saved for this wallet. Choose email verification.
+                  </p>
+                )}
+
+                {stepUpMethod === "EMAIL_OTP" && (
+                  <>
+                    <p className="momo-note">
+                      {stepUpEmailMessage ||
+                        `The code will be sent to ${session.masked_email || "the email saved on this wallet"}.`}
+                    </p>
+                    <label>
+                      Six-digit email code
+                      <input
+                        required
+                        aria-label="Six-digit email verification code"
+                        type="password"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        value={code}
+                        maxLength={6}
+                        disabled={!stepUpEmailSent}
+                        onChange={(e) =>
+                          setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+                        }
+                        placeholder="Six-digit email code"
+                      />
+                    </label>
+                  </>
+                )}
+                {stepUpMethod === "PASSPORT" && (
+                  <label>
+                    Passport or ID number saved on the wallet
+                    <input
+                      required
+                      aria-label="Passport or ID number"
+                      type="password"
+                      autoComplete="off"
+                      value={code}
+                      onChange={(e) => setCode(e.target.value)}
+                      placeholder="Enter passport / ID number"
+                    />
+                  </label>
+                )}
 
                 {error && <p className="momo-error">{error}</p>}
 
-                <button type="submit" className="send-button" disabled={loading}>
+                <button
+                  type="submit"
+                  className="send-button"
+                  disabled={
+                    loading ||
+                    !stepUpMethod ||
+                    !code.trim() ||
+                    (stepUpMethod === "EMAIL_OTP" && !stepUpEmailSent)
+                  }
+                >
                   {loading ? "Verifying…" : "Verify"}
                 </button>
               </form>

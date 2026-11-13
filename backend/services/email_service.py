@@ -278,7 +278,7 @@ def send_medium_risk_otp_email(recipient_email, otp_code, transaction_details=No
         or recipient_email.lower().endswith("@example.test")
     ):
         raise OtpDeliveryError(
-            "A verified, deliverable email address is required for MEDIUM-risk verification."
+            "A deliverable email address is required for MEDIUM-risk verification. Choose passport/ID verification if this wallet has no usable email."
         )
 
     details = transaction_details or {}

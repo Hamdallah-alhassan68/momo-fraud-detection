@@ -147,9 +147,6 @@ export default function MTNDisbursement() {
   const [customerView, setCustomerView] = useState("signin");
   const [loginNumber, setLoginNumber] = useState("");
   const [loginPin, setLoginPin] = useState("");
-  const [verificationCode, setVerificationCode] = useState("");
-  const [emailChallengeStarted, setEmailChallengeStarted] = useState(false);
-  const [emailVerificationMessage, setEmailVerificationMessage] = useState("");
   const [registration, setRegistration] = useState({
     phone_number: "",
     full_name: "",
@@ -182,7 +179,9 @@ export default function MTNDisbursement() {
   const [session, setSession] = useState(null);
   const [authPin, setAuthPin] = useState("");
   const [stepUpInput, setStepUpInput] = useState("");
-  const [stepUpMethod, setStepUpMethod] = useState("EMAIL_OTP");
+  const [stepUpMethod, setStepUpMethod] = useState("");
+  const [stepUpEmailSent, setStepUpEmailSent] = useState(false);
+  const [stepUpEmailMessage, setStepUpEmailMessage] = useState("");
   const [stepUpChallenge, setStepUpChallenge] = useState(null);
   const [receipt, setReceipt] = useState(null);
 
@@ -423,62 +422,6 @@ export default function MTNDisbursement() {
     }
   }
 
-  async function handleRequestEmailVerification(event) {
-    event.preventDefault();
-    setError("");
-    setEmailVerificationMessage("");
-    setLoading(true);
-    try {
-      const response = await fetch(`${API_URL}/api/momo/customer/email/challenge`, {
-        method: "POST",
-        headers: {
-          Authorization: `******`,
-        },
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Could not send verification email.");
-      setEmailChallengeStarted(true);
-      setEmailVerificationMessage(data.message);
-    } catch (verificationError) {
-      setError(verificationError.message || "Could not send verification email.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleVerifyEmail(event) {
-    event.preventDefault();
-    setError("");
-    setEmailVerificationMessage("");
-    setLoading(true);
-    try {
-      const response = await fetch(`${API_URL}/api/momo/customer/email/verify`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `******`,
-        },
-        body: JSON.stringify({
-          code: verificationCode,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Email verification failed.");
-      setCustomerAccount((current) => ({
-        ...current,
-        email_verified: true,
-        masked_email: data.masked_email,
-      }));
-      setVerificationCode("");
-      setEmailChallengeStarted(false);
-      setEmailVerificationMessage("Email verified. MEDIUM-risk codes can now be sent here.");
-    } catch (verificationError) {
-      setError(verificationError.message || "Email verification failed.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   function signOutCustomer() {
     sessionStorage.removeItem("momo-sandbox-customer-token");
     setCustomerToken("");
@@ -626,7 +569,9 @@ export default function MTNDisbursement() {
       if (data.status === "STEP_UP_REQUIRED") {
         setStepUpChallenge(data);
         setStepUpInput("");
-        setStepUpMethod("EMAIL_OTP");
+        setStepUpMethod("");
+        setStepUpEmailSent(false);
+        setStepUpEmailMessage("");
         setStep("stepup");
       } else {
         setReceipt(data);
@@ -654,10 +599,53 @@ export default function MTNDisbursement() {
   }
 
   // Step 3: Complete MEDIUM-risk step-up challenge.
+  async function handleChooseStepUpMethod(method) {
+    setStepUpMethod(method);
+    setStepUpInput("");
+    setError("");
+    setStepUpEmailMessage("");
+    setStepUpEmailSent(false);
+
+    if (method !== "EMAIL_OTP") return;
+
+    setLoading(true);
+    try {
+      const response = await fetch(
+        `${API_URL}/api/momo/transaction/${session.session_id}/step-up/email`,
+        {
+          method: "POST",
+          headers: { Authorization: `******` },
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Could not send the verification email.");
+      }
+      setStepUpEmailSent(true);
+      setStepUpEmailMessage(data.message);
+    } catch (emailError) {
+      setError(emailError.message || "Could not send the verification email.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleVerifyStepUp(e) {
     if (e) e.preventDefault();
+    if (!stepUpMethod) {
+      setError("Choose email or passport/ID verification.");
+      return;
+    }
+    if (stepUpMethod === "EMAIL_OTP" && !stepUpEmailSent) {
+      setError("Request the email code before entering it.");
+      return;
+    }
     if (!stepUpInput.trim()) {
-      setError("Enter the six-digit code sent to your verified email.");
+      setError(
+        stepUpMethod === "EMAIL_OTP"
+          ? "Enter the six-digit code sent to your email."
+          : "Enter the passport or ID number saved on your wallet.",
+      );
       return;
     }
 
@@ -775,6 +763,9 @@ export default function MTNDisbursement() {
     setSession(null);
     setAuthPin("");
     setStepUpInput("");
+    setStepUpMethod("");
+    setStepUpEmailSent(false);
+    setStepUpEmailMessage("");
     setStepUpChallenge(null);
     setReceipt(null);
     setError("");
@@ -1064,58 +1055,6 @@ export default function MTNDisbursement() {
                 No request is sent to MTN and no money moves.
               </div>
             )}
-            {customerAccount && !customerAccount.email_verified && (
-              <section className="security-code-setup" aria-labelledby="email-verification-title">
-                <h4 id="email-verification-title">Verify your email for transaction security</h4>
-                <p>
-                  MEDIUM-risk transactions require a one-time code. We’ll send it to the
-                  email saved on this wallet:{" "}
-                  <strong>{customerAccount.masked_email || "unavailable"}</strong>.
-                  The code is never shown in this app.
-                </p>
-                {emailVerificationMessage && (
-                  <p className="security-code-setup-message" role="status">
-                    {emailVerificationMessage}
-                  </p>
-                )}
-                {!emailChallengeStarted ? (
-                  <form onSubmit={handleRequestEmailVerification} className="transaction-form">
-                    <button type="submit" className="primary-action-btn" disabled={loading}>
-                      {loading ? "Sending…" : "Send code to my email"}
-                    </button>
-                  </form>
-                ) : (
-                  <form onSubmit={handleVerifyEmail} className="transaction-form">
-                    <label className="field-block">
-                      Six-digit code sent to{" "}
-                      {customerAccount.masked_email || "your saved email"}
-                      <input
-                        type="password"
-                        required
-                        inputMode="numeric"
-                        autoComplete="one-time-code"
-                        maxLength={6}
-                        value={verificationCode}
-                        onChange={(event) =>
-                          setVerificationCode(
-                            event.target.value.replace(/\D/g, "").slice(0, 6),
-                          )
-                        }
-                        className="standard-input"
-                      />
-                    </label>
-                    <button
-                      type="submit"
-                      className="primary-action-btn"
-                      disabled={loading || verificationCode.length !== 6}
-                    >
-                      {loading ? "Verifying…" : "Verify email"}
-                    </button>
-                  </form>
-                )}
-              </section>
-            )}
-
             {/* STEP 1: TRANSACTION DETAILS FORM */}
             {step === "form" && !customerAccount && (
               <div className="transaction-form">
@@ -1619,8 +1558,11 @@ export default function MTNDisbursement() {
                   <div>
                     <h4>Identity Verification Required</h4>
                     <p>
-                      An unfamiliar device or network was detected. Complete step-up authorization
-                      to release payment.
+                      This transaction is pending additional verification, not declined.
+                      Risk tier: MEDIUM
+                      {stepUpChallenge.risk_score != null &&
+                        ` (${(Number(stepUpChallenge.risk_score) * 100).toFixed(0)}%)`}.
+                      Choose one method to continue.
                     </p>
                   </div>
                 </div>
@@ -1636,49 +1578,102 @@ export default function MTNDisbursement() {
                   </div>
                 )}
 
-                <form onSubmit={handleVerifyStepUp} className="stepup-form-body">
-                  <div className="field-block">
-                    <label htmlFor="stepup-credential" className="field-label">
-                      Enter the six-digit code sent to{" "}
-                      {stepUpChallenge.masked_email || "your verified email"}
-                    </label>
-                    <input
-                      id="stepup-credential"
-                      type="password"
-                      inputMode="numeric"
-                      autoComplete="off"
-                      maxLength={6}
-                      autoFocus
-                      value={stepUpInput}
-                      onChange={(e) =>
-                        setStepUpInput(e.target.value.replace(/\D/g, "").slice(0, 6))
-                      }
-                      placeholder="Six-digit email code"
-                      className="large-code-input"
-                    />
-                  </div>
-
-                  <div className="form-button-row">
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={handleReset}
-                      disabled={loading}
-                    >
-                      Cancel Transfer
-                    </button>
+                <div className="stepup-method-options" role="group" aria-label="Choose verification method">
+                  <button
+                    type="button"
+                    className={`mode-tab ${stepUpMethod === "EMAIL_OTP" ? "active" : ""}`}
+                    disabled={loading || !stepUpChallenge.email_available}
+                    onClick={() => handleChooseStepUpMethod("EMAIL_OTP")}
+                  >
+                    {stepUpEmailSent ? "Email code sent" : "Verify by email"}
+                  </button>
+                  <button
+                    type="button"
+                    className={`mode-tab ${stepUpMethod === "PASSPORT" ? "active" : ""}`}
+                    disabled={loading || !stepUpChallenge.passport_available}
+                    onClick={() => handleChooseStepUpMethod("PASSPORT")}
+                  >
+                    Verify with passport / ID
+                  </button>
+                </div>
+                {!stepUpChallenge.email_available && (
+                  <p className="stepup-method-note">
+                    Email verification is unavailable for this wallet. Use its saved passport/ID.
+                  </p>
+                )}
+                {!stepUpChallenge.passport_available && (
+                  <p className="stepup-method-note">
+                    No passport/ID is saved for this wallet. Use email verification.
+                  </p>
+                )}
+                {stepUpMethod === "EMAIL_OTP" && (
+                  <form onSubmit={handleVerifyStepUp} className="stepup-form-body">
+                    <p className="stepup-method-note" role="status">
+                      {stepUpEmailMessage ||
+                        `The code will be sent to ${stepUpChallenge.masked_email || "the email saved on your wallet"}.`}
+                    </p>
+                    <div className="field-block">
+                      <label htmlFor="stepup-credential" className="field-label">
+                        Six-digit email code
+                      </label>
+                      <input
+                        id="stepup-credential"
+                        type="password"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        maxLength={6}
+                        value={stepUpInput}
+                        onChange={(e) =>
+                          setStepUpInput(e.target.value.replace(/\D/g, "").slice(0, 6))
+                        }
+                        placeholder="Six-digit email code"
+                        className="large-code-input"
+                        disabled={!stepUpEmailSent}
+                      />
+                    </div>
                     <button
                       type="submit"
                       className="primary-action-btn"
-                      disabled={
-                        loading ||
-                        stepUpInput.length < 6
-                      }
+                      disabled={loading || !stepUpEmailSent || stepUpInput.length !== 6}
                     >
                       {loading ? "Verifying..." : "Verify & Authorize"}
                     </button>
-                  </div>
-                </form>
+                  </form>
+                )}
+                {stepUpMethod === "PASSPORT" && (
+                  <form onSubmit={handleVerifyStepUp} className="stepup-form-body">
+                    <div className="field-block">
+                      <label htmlFor="stepup-credential" className="field-label">
+                        Passport or ID number saved on your wallet
+                      </label>
+                      <input
+                        id="stepup-credential"
+                        type="password"
+                        autoComplete="off"
+                        value={stepUpInput}
+                        onChange={(e) => setStepUpInput(e.target.value)}
+                        placeholder="Enter your passport / ID number"
+                        className="large-code-input"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="primary-action-btn"
+                      disabled={loading || !stepUpInput.trim()}
+                    >
+                      {loading ? "Verifying..." : "Verify & Authorize"}
+                    </button>
+                  </form>
+                )}
+                {error && <div className="form-error-alert" role="alert">{error}</div>}
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={handleReset}
+                  disabled={loading}
+                >
+                  Cancel transfer
+                </button>
               </div>
             )}
 

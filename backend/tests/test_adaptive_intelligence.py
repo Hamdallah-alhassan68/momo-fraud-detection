@@ -1086,7 +1086,7 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         database.DATABASE_PATH = self.original_database_path
         self.temp_dir.cleanup()
 
-    def test_medium_risk_sends_one_time_code_to_verified_email(self):
+    def test_medium_risk_offers_email_and_passport_without_auto_sending_email(self):
         session = self.simulator.initiate_transaction(
             customer_ref="WALLET-1001",
             transaction_type="TRANSFER",
@@ -1099,12 +1099,26 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         )
 
         self.assertEqual(challenge["status"], "STEP_UP_REQUIRED")
-        self.assertEqual(challenge["verification_method"], "EMAIL_OTP")
+        self.assertIsNone(challenge["verification_method"])
+        self.assertEqual(
+            challenge["available_methods"], ["EMAIL_OTP", "PASSPORT"]
+        )
         self.assertTrue(challenge["email_available"])
+        self.assertTrue(challenge["passport_available"])
         self.assertEqual(challenge["masked_email"], "p***t@example.com")
         self.assertNotIn("demo_hint", challenge)
-        self.assertNotIn(self.sent_step_up_codes[-1], str(challenge))
+        self.assertFalse(self.sent_step_up_codes)
         self.assertIn("Recent SIM change", challenge["reasons"])
+        saved_session = self.simulator.get_momo_session(session["session_id"])
+        self.assertEqual(saved_session["status"], "STEP_UP")
+        self.assertIsNone(saved_session["otp_code"])
+
+        email_challenge = self.simulator.request_step_up_email(
+            session["session_id"]
+        )
+        self.assertTrue(email_challenge["sent"])
+        self.assertEqual(email_challenge["masked_email"], "p***t@example.com")
+        self.assertNotIn(self.sent_step_up_codes[-1], str(email_challenge))
         saved_session = self.simulator.get_momo_session(session["session_id"])
         self.assertTrue(saved_session["otp_code"].startswith("hmac-sha256:"))
 
@@ -1130,7 +1144,7 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         )
         self.assertEqual(challenge["status"], "STEP_UP_REQUIRED")
 
-        with self.assertRaisesRegex(ValueError, "email verification code"):
+        with self.assertRaisesRegex(ValueError, "Choose email or passport"):
             self.simulator.verify_transaction(session["session_id"], "2233")
 
         self.assertEqual(
@@ -1138,7 +1152,7 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
             "STEP_UP",
         )
 
-    def test_medium_risk_email_code_expires_and_is_cleared(self):
+    def test_medium_risk_passport_id_verifies_pending_transaction(self):
         session = self.simulator.initiate_transaction(
             customer_ref="WALLET-1001",
             transaction_type="TRANSFER",
@@ -1150,6 +1164,57 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
             session["session_id"], "2233"
         )
         self.assertEqual(challenge["status"], "STEP_UP_REQUIRED")
+
+        result = self.simulator.verify_transaction(
+            session["session_id"],
+            " gha-712345678-1 ",
+            step_up=True,
+            step_up_method="PASSPORT",
+        )
+
+        self.assertEqual(result["status"], "APPROVED")
+        self.assertTrue(result["step_up_completed"])
+        self.assertEqual(
+            self.simulator.get_momo_session(session["session_id"])["status"],
+            "COMPLETED",
+        )
+
+    def test_incorrect_passport_id_does_not_decline_before_attempt_limit(self):
+        session = self.simulator.initiate_transaction(
+            customer_ref="WALLET-1001",
+            transaction_type="TRANSFER",
+            amount=25,
+            recipient="WALLET-2001",
+            scenario="RECENT_SIM_SWAP",
+        )
+        self.simulator.verify_transaction(session["session_id"], "2233")
+
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            self.simulator.verify_transaction(
+                session["session_id"],
+                "WRONG-PASSPORT",
+                step_up=True,
+                step_up_method="PASSPORT",
+            )
+
+        saved_session = self.simulator.get_momo_session(session["session_id"])
+        self.assertEqual(saved_session["status"], "STEP_UP")
+        self.assertEqual(saved_session["step_up_count"], 1)
+
+    def test_email_step_up_code_can_be_resent_after_cooldown(self):
+        session = self.simulator.initiate_transaction(
+            customer_ref="WALLET-1001",
+            transaction_type="TRANSFER",
+            amount=25,
+            recipient="WALLET-2001",
+            scenario="RECENT_SIM_SWAP",
+        )
+        self.simulator.verify_transaction(session["session_id"], "2233")
+        first = self.simulator.request_step_up_email(session["session_id"])
+        self.assertTrue(first["sent"])
+        with self.assertRaisesRegex(ValueError, "Wait before requesting"):
+            self.simulator.request_step_up_email(session["session_id"])
+
         connection = database.get_connection()
         try:
             connection.execute(
@@ -1164,18 +1229,50 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         finally:
             connection.close()
 
-        with self.assertRaisesRegex(ValueError, "expired"):
+        second = self.simulator.request_step_up_email(session["session_id"])
+        self.assertTrue(second["sent"])
+        self.assertEqual(len(self.sent_step_up_codes), 2)
+
+    def test_medium_risk_email_code_expires_and_is_cleared(self):
+        session = self.simulator.initiate_transaction(
+            customer_ref="WALLET-1001",
+            transaction_type="TRANSFER",
+            amount=25,
+            recipient="WALLET-2001",
+            scenario="RECENT_SIM_SWAP",
+        )
+        challenge = self.simulator.verify_transaction(
+            session["session_id"], "2233"
+        )
+        self.assertEqual(challenge["status"], "STEP_UP_REQUIRED")
+        self.simulator.request_step_up_email(session["session_id"])
+        connection = database.get_connection()
+        try:
+            connection.execute(
+                """
+                UPDATE momo_sessions
+                SET otp_expires_at = ?
+                WHERE session_id = ?
+                """,
+                ("2000-01-01T00:00:00+00:00", session["session_id"]),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaisesRegex(ValueError, "Choose Email and request"):
             self.simulator.verify_transaction(
                 session["session_id"],
-                self.sent_step_up_codes[-1],
+                "000000",
                 step_up=True,
                 step_up_method="EMAIL_OTP",
             )
         saved_session = self.simulator.get_momo_session(session["session_id"])
-        self.assertEqual(saved_session["status"], "EXPIRED")
+        self.assertEqual(saved_session["status"], "STEP_UP")
         self.assertIsNone(saved_session["otp_code"])
+        self.assertEqual(saved_session["step_up_count"], 0)
 
-    def test_medium_risk_blocks_without_verified_email(self):
+    def test_medium_risk_unverified_email_remains_pending_for_passport_choice(self):
         self.simulator.CUSTOMERS[0]["email_verified"] = False
         session = self.simulator.initiate_transaction(
             customer_ref="WALLET-1001",
@@ -1189,8 +1286,13 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
             session["session_id"], "2233"
         )
 
-        self.assertEqual(result["status"], "BLOCKED")
-        self.assertFalse(result.get("email_available", False))
+        self.assertEqual(result["status"], "STEP_UP_REQUIRED")
+        self.assertTrue(result["email_available"])
+        self.assertTrue(result["passport_available"])
+        self.assertEqual(
+            self.simulator.get_momo_session(session["session_id"])["status"],
+            "STEP_UP",
+        )
         self.assertNotIn("demo_hint", result)
 
     def test_live_step_up_sends_email_otp_without_completing_transfer(self):
@@ -1219,6 +1321,8 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         self.assertEqual(result["status"], "STEP_UP_REQUIRED")
         self.assertTrue(result["email_available"])
         self.assertNotIn("demo_hint", result)
+        self.assertFalse(self.sent_step_up_codes)
+        self.simulator.request_step_up_email(session["session_id"])
         self.assertTrue(self.sent_step_up_codes)
         self.assertEqual(
             self.simulator.BALANCES["WALLET-1001"], initial_balance
@@ -1240,6 +1344,7 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
             session["session_id"], "2233"
         )
         self.assertEqual(challenge["status"], "STEP_UP_REQUIRED")
+        self.simulator.request_step_up_email(session["session_id"])
 
         for _ in range(4):
             with self.assertRaisesRegex(ValueError, "Incorrect email code"):
