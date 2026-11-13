@@ -1212,6 +1212,8 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
         self.simulator.verify_transaction(session["session_id"], "2233")
         first = self.simulator.request_step_up_email(session["session_id"])
         self.assertTrue(first["sent"])
+        self.assertEqual(first["expires_in_seconds"], 10 * 60)
+        self.assertEqual(first["resend_after_seconds"], 60)
         with self.assertRaisesRegex(ValueError, "Wait before requesting"):
             self.simulator.request_step_up_email(session["session_id"])
 

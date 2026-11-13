@@ -1137,6 +1137,8 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
                 },
             )
             self.assertEqual(created.status_code, 200, created.text)
+            token_claims = auth.decode_access_token(created.json()["token"])
+            self.assertEqual(token_claims["exp"] - token_claims["iat"], 24 * 60 * 60)
             headers = {"Authorization": f"Bearer {created.json()['token']}"}
             started = self.client.post(
                 "/api/momo/transaction/initiate",
@@ -1167,6 +1169,22 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
             self.assertEqual(
                 database.get_momo_session(started.json()["session_id"])["status"],
                 "STEP_UP",
+            )
+
+            expired_token = auth.create_access_token(
+                user_id=0,
+                username=self.phone,
+                role="momo_customer",
+                expires_in_seconds=-1,
+            )
+            expired_response = self.client.post(
+                f"/api/momo/transaction/{started.json()['session_id']}/step-up/email",
+                headers={"Authorization": f"Bearer {expired_token}"},
+            )
+            self.assertEqual(expired_response.status_code, 401)
+            self.assertIn(
+                "wallet sign-in has expired",
+                expired_response.json()["detail"],
             )
 
             email_challenge = self.client.post(

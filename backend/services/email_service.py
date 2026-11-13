@@ -291,7 +291,7 @@ def send_medium_risk_otp_email(recipient_email, otp_code, transaction_details=No
         f"Transaction: {transaction_type}\n"
         f"Amount: GHS {amount:,.2f}\n"
         f"One-time code: {otp_code}\n\n"
-        "This code expires in five minutes and can be used once. "
+        "This code expires in 10 minutes and can be used once. "
         "Never share it with anyone.",
         "plain",
         "utf-8",

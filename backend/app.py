@@ -599,7 +599,7 @@ def momo_customer_login(
         username=customer_phone,
         role="momo_customer",
         display_name=subscriber.get("full_name") or "Sandbox customer",
-        expires_in_seconds=3600,
+        expires_in_seconds=86400,
     )
     return {
         "token": token,
@@ -806,7 +806,7 @@ def momo_customer_register(
         username=phone,
         role="momo_customer",
         display_name=profile["full_name"],
-        expires_in_seconds=3600,
+        expires_in_seconds=86400,
     )
     return {
         "token": token,
@@ -1732,6 +1732,14 @@ def momo_transaction_step_up_email(
         if len(parts) == 2 and parts[0].lower() == "bearer"
         else None
     )
+    if len(parts) == 2 and parts[0].lower() == "bearer" and claims is None:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Your wallet sign-in has expired. Sign in again before "
+                "requesting an email verification code."
+            ),
+        )
     if claims and claims.get("role") == "momo_customer":
         subscriber = _require_sandbox_customer(authorization)
         owned_refs = {

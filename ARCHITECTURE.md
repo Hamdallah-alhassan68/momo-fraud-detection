@@ -82,11 +82,12 @@ For the proposed 3NF design and ERD of the PaySim-format training CSV, see
    `RECENT_SIM_SWAP` test flag; it does not query a telecom provider or verify
    that a real SIM was changed.
 4. Confirm the PIN. The isolated signal should produce MEDIUM risk and request
-   the additional simulated email code. Use the UI's displayed demo code, then
-   point out the “Recent SIM change” reason and step-up decision in the result.
+   the additional email code. Use a wallet with a deliverable test email
+   address, enter the received code, then point out the “Recent SIM change”
+   reason and step-up decision in the result.
    The risk-reasons list is shown for approved results too.
-   The code is not emailed or sent by SMS; avoiding SMS to the affected number
-   is part of the scenario being illustrated.
+   The code is sent by email only after that option is selected; it is not shown
+   in the interface or sent by SMS.
 5. Explain that this demonstrates the prototype's response to a supplied SIM
    swap signal, not detection of a real SIM swap. Optionally use **Select all
    risks** to show compound-risk blocking and case creation, but distinguish

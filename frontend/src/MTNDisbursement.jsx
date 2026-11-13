@@ -182,6 +182,9 @@ export default function MTNDisbursement() {
   const [stepUpMethod, setStepUpMethod] = useState("");
   const [stepUpEmailSent, setStepUpEmailSent] = useState(false);
   const [stepUpEmailMessage, setStepUpEmailMessage] = useState("");
+  const [stepUpCodeExpiresAt, setStepUpCodeExpiresAt] = useState(null);
+  const [stepUpResendAt, setStepUpResendAt] = useState(null);
+  const [stepUpClockNow, setStepUpClockNow] = useState(0);
   const [stepUpChallenge, setStepUpChallenge] = useState(null);
   const [receipt, setReceipt] = useState(null);
 
@@ -217,6 +220,20 @@ export default function MTNDisbursement() {
   });
   const displayCurrency =
     transactionType === "TRANSFER" ? configuration.currency : "GHS";
+  const stepUpSecondsLeft = stepUpCodeExpiresAt
+    ? Math.max(0, Math.ceil((stepUpCodeExpiresAt - stepUpClockNow) / 1000))
+    : 0;
+  const stepUpResendSecondsLeft = stepUpResendAt
+    ? Math.max(0, Math.ceil((stepUpResendAt - stepUpClockNow) / 1000))
+    : 0;
+  const stepUpCodeCountdown = `${String(Math.floor(stepUpSecondsLeft / 60)).padStart(2, "0")}:${String(stepUpSecondsLeft % 60).padStart(2, "0")}`;
+  const stepUpResendCountdown = `${String(Math.floor(stepUpResendSecondsLeft / 60)).padStart(2, "0")}:${String(stepUpResendSecondsLeft % 60).padStart(2, "0")}`;
+
+  useEffect(() => {
+    if (step !== "stepup" || !stepUpCodeExpiresAt) return undefined;
+    const timer = window.setInterval(() => setStepUpClockNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [step, stepUpCodeExpiresAt]);
 
   // Recipient live lookup as user types
   useEffect(() => {
@@ -572,6 +589,8 @@ export default function MTNDisbursement() {
         setStepUpMethod("");
         setStepUpEmailSent(false);
         setStepUpEmailMessage("");
+        setStepUpCodeExpiresAt(null);
+        setStepUpResendAt(null);
         setStep("stepup");
       } else {
         setReceipt(data);
@@ -599,14 +618,19 @@ export default function MTNDisbursement() {
   }
 
   // Step 3: Complete MEDIUM-risk step-up challenge.
-  async function handleChooseStepUpMethod(method) {
+  async function handleChooseStepUpMethod(method, forceResend = false) {
     setStepUpMethod(method);
     setStepUpInput("");
     setError("");
-    setStepUpEmailMessage("");
-    setStepUpEmailSent(false);
 
     if (method !== "EMAIL_OTP") return;
+    if (
+      !forceResend &&
+      stepUpEmailSent &&
+      stepUpSecondsLeft > 0
+    ) {
+      return;
+    }
 
     setLoading(true);
     try {
@@ -623,6 +647,14 @@ export default function MTNDisbursement() {
       }
       setStepUpEmailSent(true);
       setStepUpEmailMessage(data.message);
+      const sentAt = Date.now();
+      setStepUpClockNow(sentAt);
+      setStepUpCodeExpiresAt(
+        sentAt + Number(data.expires_in_seconds || 600) * 1000,
+      );
+      setStepUpResendAt(
+        sentAt + Number(data.resend_after_seconds || 60) * 1000,
+      );
     } catch (emailError) {
       setError(emailError.message || "Could not send the verification email.");
     } finally {
@@ -636,8 +668,11 @@ export default function MTNDisbursement() {
       setError("Choose email or passport/ID verification.");
       return;
     }
-    if (stepUpMethod === "EMAIL_OTP" && !stepUpEmailSent) {
-      setError("Request the email code before entering it.");
+    if (
+      stepUpMethod === "EMAIL_OTP" &&
+      (!stepUpEmailSent || stepUpSecondsLeft <= 0)
+    ) {
+      setError("Request a new email code before entering it.");
       return;
     }
     if (!stepUpInput.trim()) {
@@ -766,6 +801,8 @@ export default function MTNDisbursement() {
     setStepUpMethod("");
     setStepUpEmailSent(false);
     setStepUpEmailMessage("");
+    setStepUpCodeExpiresAt(null);
+    setStepUpResendAt(null);
     setStepUpChallenge(null);
     setReceipt(null);
     setError("");
@@ -1612,6 +1649,18 @@ export default function MTNDisbursement() {
                       {stepUpEmailMessage ||
                         `The code will be sent to ${stepUpChallenge.masked_email || "the email saved on your wallet"}.`}
                     </p>
+                    {stepUpEmailSent && (
+                      <p
+                        className="stepup-method-note"
+                        aria-live={stepUpSecondsLeft <= 0 ? "polite" : "off"}
+                      >
+                        {stepUpSecondsLeft > 0
+                          ? `Code expires in ${stepUpCodeCountdown}.`
+                          : "This code has expired. Request a new code to continue."}
+                        {stepUpResendSecondsLeft > 0 &&
+                          ` You can request another in ${stepUpResendCountdown}.`}
+                      </p>
+                    )}
                     <div className="field-block">
                       <label htmlFor="stepup-credential" className="field-label">
                         Six-digit email code
@@ -1628,13 +1677,26 @@ export default function MTNDisbursement() {
                         }
                         placeholder="Six-digit email code"
                         className="large-code-input"
-                        disabled={!stepUpEmailSent}
+                        disabled={!stepUpEmailSent || stepUpSecondsLeft <= 0}
                       />
                     </div>
                     <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={() => handleChooseStepUpMethod("EMAIL_OTP", true)}
+                      disabled={loading || stepUpResendSecondsLeft > 0}
+                    >
+                      {stepUpEmailSent ? "Resend code" : "Send code"}
+                    </button>
+                    <button
                       type="submit"
                       className="primary-action-btn"
-                      disabled={loading || !stepUpEmailSent || stepUpInput.length !== 6}
+                      disabled={
+                        loading ||
+                        !stepUpEmailSent ||
+                        stepUpSecondsLeft <= 0 ||
+                        stepUpInput.length !== 6
+                      }
                     >
                       {loading ? "Verifying..." : "Verify & Authorize"}
                     </button>

@@ -65,6 +65,8 @@ from services.input_validation import (
 )
 
 GHANA_TIMEZONE = ZoneInfo("Africa/Accra")
+STEP_UP_EMAIL_CODE_TTL_SECONDS = 10 * 60
+STEP_UP_EMAIL_RESEND_COOLDOWN_SECONDS = 60
 
 # ==========================================================
 # DEMO DATA
@@ -1118,9 +1120,18 @@ def request_step_up_email(session_id):
         )
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
-        sent_at = expires_at - timedelta(minutes=5)
-        if now < sent_at + timedelta(seconds=60):
-            raise ValueError("Wait before requesting another email code.")
+        sent_at = expires_at - timedelta(
+            seconds=STEP_UP_EMAIL_CODE_TTL_SECONDS
+        )
+        resend_at = sent_at + timedelta(
+            seconds=STEP_UP_EMAIL_RESEND_COOLDOWN_SECONDS
+        )
+        if now < resend_at:
+            wait_seconds = max(1, int((resend_at - now).total_seconds()))
+            raise ValueError(
+                "Wait before requesting another email code. "
+                f"Try again in {wait_seconds} seconds."
+            )
 
     email_code = f"{secrets.randbelow(1_000_000):06d}"
     send_medium_risk_otp_email(
@@ -1135,14 +1146,17 @@ def request_step_up_email(session_id):
         session_id,
         "STEP_UP",
         otp_code=hash_one_time_code(email_code, f"step-up:{session_id}"),
-        otp_expires_at=(now + timedelta(minutes=5)).isoformat(),
+        otp_expires_at=(
+            now + timedelta(seconds=STEP_UP_EMAIL_CODE_TTL_SECONDS)
+        ).isoformat(),
         reason="Email verification code sent",
     )
     return {
         "sent": True,
         "masked_email": _mask_email(email_address),
         "message": f"A verification code was sent to {_mask_email(email_address)}.",
-        "expires_in_seconds": 300,
+        "expires_in_seconds": STEP_UP_EMAIL_CODE_TTL_SECONDS,
+        "resend_after_seconds": STEP_UP_EMAIL_RESEND_COOLDOWN_SECONDS,
     }
 
 

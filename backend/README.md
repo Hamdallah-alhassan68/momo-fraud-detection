@@ -56,9 +56,10 @@ the wallet's saved email when the customer chooses email verification. The
 customer can instead verify using the passport/ID number saved on the wallet.
 Email verification codes are sent only after the email option is selected.
 Both codes are generated server-side, hashed
-before storage, expire after 10 minutes (SMS) or 5 minutes (email), and are
+before storage, expire after 10 minutes, and are
 never returned by the API or shown in the interface. SMS requests are limited
 to three per wallet per ten minutes; five incorrect attempts block that code.
+Email codes can be requested again after a 60-second cooldown.
 Use a dedicated SMTP sender/mailbox and verify its domain authentication.
 For MEDIUM-risk flows, the wallet UI offers email code or passport/ID
 verification; entering the correct factor continues the pending simulation
@@ -182,10 +183,12 @@ with previously trusted enrollment/successful-transfer signals. IP may identify
 a reverse proxy when deployed behind one. These signals do not provide carrier
 or SIM-swap data. Signal values are not shown in the customer UI.
 HIGH-risk transactions are blocked. MEDIUM-risk transfers require the saved
-six-digit one-time code sent to the verified wallet email. The code is
-server-generated, stored as a keyed hash, expires after five minutes, and is
+six-digit one-time code sent to the wallet's saved email. The code is
+server-generated, stored as a keyed hash, expires after ten minutes, and is
 single-use. It is not returned by the API, stored in the email outbox, or
 shown in the interface. SMTP must be configured for MEDIUM-risk step-up.
+Sandbox wallet sign-in tokens expire after 24 hours; sign out when using a
+shared device.
 
 The frontend does not impose an arbitrary amount cap. The backend enforces the
 provider environment's configured transfer limit (EUR 10,000 for this sandbox

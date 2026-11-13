@@ -72,6 +72,18 @@ export default function MomoSimulator() {
   const [stepUpMethod, setStepUpMethod] = useState("");
   const [stepUpEmailSent, setStepUpEmailSent] = useState(false);
   const [stepUpEmailMessage, setStepUpEmailMessage] = useState("");
+  const [stepUpCodeExpiresAt, setStepUpCodeExpiresAt] = useState(null);
+  const [stepUpResendAt, setStepUpResendAt] = useState(null);
+  const [stepUpClockNow, setStepUpClockNow] = useState(0);
+
+  const stepUpSecondsLeft = stepUpCodeExpiresAt
+    ? Math.max(0, Math.ceil((stepUpCodeExpiresAt - stepUpClockNow) / 1000))
+    : 0;
+  const stepUpResendSecondsLeft = stepUpResendAt
+    ? Math.max(0, Math.ceil((stepUpResendAt - stepUpClockNow) / 1000))
+    : 0;
+  const stepUpCodeCountdown = `${String(Math.floor(stepUpSecondsLeft / 60)).padStart(2, "0")}:${String(stepUpSecondsLeft % 60).padStart(2, "0")}`;
+  const stepUpResendCountdown = `${String(Math.floor(stepUpResendSecondsLeft / 60)).padStart(2, "0")}:${String(stepUpResendSecondsLeft % 60).padStart(2, "0")}`;
 
   useEffect(() => {
     fetch(`${API_URL}/api/momo/customers`)
@@ -90,6 +102,12 @@ export default function MomoSimulator() {
       .catch(() => setError("Could not load the mobile money service."));
   }, []);
 
+  useEffect(() => {
+    if (step !== "stepup" || !stepUpCodeExpiresAt) return undefined;
+    const timer = window.setInterval(() => setStepUpClockNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [step, stepUpCodeExpiresAt]);
+
   const customer = customers.find((c) => c.ref === customerRef);
 
   function resetForm() {
@@ -99,6 +117,11 @@ export default function MomoSimulator() {
     setResult(null);
     setError("");
     setShowInsights(false);
+    setStepUpMethod("");
+    setStepUpEmailSent(false);
+    setStepUpEmailMessage("");
+    setStepUpCodeExpiresAt(null);
+    setStepUpResendAt(null);
     if (customer) {
       setDeviceId(customer.devices[0]);
     }
@@ -190,6 +213,14 @@ export default function MomoSimulator() {
   async function confirmCode(event, isStepUp = false) {
     event.preventDefault();
     if (!session) return;
+    if (
+      isStepUp &&
+      stepUpMethod === "EMAIL_OTP" &&
+      (!stepUpEmailSent || stepUpSecondsLeft <= 0)
+    ) {
+      setError("Request a new email code before entering it.");
+      return;
+    }
     setError("");
     setLoading(true);
 
@@ -217,6 +248,8 @@ export default function MomoSimulator() {
         setStepUpMethod("");
         setStepUpEmailSent(false);
         setStepUpEmailMessage("");
+        setStepUpCodeExpiresAt(null);
+        setStepUpResendAt(null);
         setStep("stepup");
       } else {
         setResult(data);
@@ -231,13 +264,12 @@ export default function MomoSimulator() {
 
   const available = customer?.balance ?? 0;
 
-  async function chooseStepUpMethod(method) {
+  async function chooseStepUpMethod(method, forceResend = false) {
     setStepUpMethod(method);
     setCode("");
     setError("");
-    setStepUpEmailSent(false);
-    setStepUpEmailMessage("");
     if (method !== "EMAIL_OTP") return;
+    if (!forceResend && stepUpEmailSent && stepUpSecondsLeft > 0) return;
 
     setLoading(true);
     try {
@@ -251,6 +283,14 @@ export default function MomoSimulator() {
       }
       setStepUpEmailSent(true);
       setStepUpEmailMessage(data.message);
+      const sentAt = Date.now();
+      setStepUpClockNow(sentAt);
+      setStepUpCodeExpiresAt(
+        sentAt + Number(data.expires_in_seconds || 600) * 1000,
+      );
+      setStepUpResendAt(
+        sentAt + Number(data.resend_after_seconds || 60) * 1000,
+      );
     } catch (emailError) {
       setError(emailError.message || "Could not send the verification email.");
     } finally {
@@ -828,6 +868,18 @@ export default function MomoSimulator() {
                       {stepUpEmailMessage ||
                         `The code will be sent to ${session.masked_email || "the email saved on this wallet"}.`}
                     </p>
+                    {stepUpEmailSent && (
+                      <p
+                        className="momo-note"
+                        aria-live={stepUpSecondsLeft <= 0 ? "polite" : "off"}
+                      >
+                        {stepUpSecondsLeft > 0
+                          ? `Code expires in ${stepUpCodeCountdown}.`
+                          : "This code has expired. Request a new code to continue."}
+                        {stepUpResendSecondsLeft > 0 &&
+                          ` You can request another in ${stepUpResendCountdown}.`}
+                      </p>
+                    )}
                     <label>
                       Six-digit email code
                       <input
@@ -838,13 +890,21 @@ export default function MomoSimulator() {
                         autoComplete="one-time-code"
                         value={code}
                         maxLength={6}
-                        disabled={!stepUpEmailSent}
+                        disabled={!stepUpEmailSent || stepUpSecondsLeft <= 0}
                         onChange={(e) =>
                           setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
                         }
                         placeholder="Six-digit email code"
                       />
                     </label>
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={() => chooseStepUpMethod("EMAIL_OTP", true)}
+                      disabled={loading || stepUpResendSecondsLeft > 0}
+                    >
+                      {stepUpEmailSent ? "Resend code" : "Send code"}
+                    </button>
                   </>
                 )}
                 {stepUpMethod === "PASSPORT" && (
@@ -871,7 +931,8 @@ export default function MomoSimulator() {
                     loading ||
                     !stepUpMethod ||
                     !code.trim() ||
-                    (stepUpMethod === "EMAIL_OTP" && !stepUpEmailSent)
+                    (stepUpMethod === "EMAIL_OTP" &&
+                      (!stepUpEmailSent || stepUpSecondsLeft <= 0))
                   }
                 >
                   {loading ? "Verifying…" : "Verify"}

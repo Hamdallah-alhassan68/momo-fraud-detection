@@ -103,10 +103,12 @@ class OtpDeliveryTests(unittest.TestCase):
                 )
             )
         encoded_message = server.sendmail.call_args.args[2].split("\n\n", 1)[1]
+        decoded_message = base64.b64decode(encoded_message).decode("utf-8")
         self.assertIn(
             "654321",
-            base64.b64decode(encoded_message).decode("utf-8"),
+            decoded_message,
         )
+        self.assertIn("expires in 10 minutes", decoded_message)
         self.assertEqual(outbox, [])
 
     def test_one_time_code_hash_is_context_bound_and_not_plaintext(self):
