@@ -1749,18 +1749,16 @@ def momo_transaction_status(
 
 
 @app.post("/api/momo/customer/email/challenge")
-def momo_customer_email_challenge(
-    body: dict = Body(...),
-    authorization: str | None = Header(default=None),
-):
+def momo_customer_email_challenge(authorization: str | None = Header(default=None)):
     subscriber = _require_sandbox_customer(authorization)
-    email_address = str(body.get("email") or "").strip().lower()
+    email_address = str(subscriber.get("email") or "").strip().lower()
     local, separator, domain = email_address.partition("@")
     if not separator or not local or "." not in domain:
-        raise HTTPException(status_code=400, detail="Enter a valid email address.")
-    if email_address == str(subscriber.get("email") or "").lower() and subscriber.get(
-        "email_verified"
-    ):
+        raise HTTPException(
+            status_code=400,
+            detail="No valid email address is saved on this wallet. Contact support before retrying.",
+        )
+    if subscriber.get("email_verified"):
         return {
             "email_verified": True,
             "masked_email": _mask_customer_email(email_address),
@@ -1778,7 +1776,11 @@ def momo_customer_email_challenge(
     if not send_email_verification_email(email_address, code):
         raise HTTPException(
             status_code=503,
-            detail="Email delivery is unavailable. Configure SMTP before verifying an email address.",
+            detail=(
+                "Could not send the verification email. Check the Render SMTP "
+                "settings, confirm SMTP_FROM is a verified Brevo sender, and "
+                "review Brevo transactional logs and Render service logs."
+            ),
         )
     _EMAIL_VERIFICATION_CHALLENGES[customer_key] = {
         "email": email_address,
@@ -1790,7 +1792,10 @@ def momo_customer_email_challenge(
         "attempts": 0,
     }
     return {
-        "message": "A verification code was sent to your email address.",
+        "message": (
+            "A verification code was sent to "
+            f"{_mask_customer_email(email_address)}. Check your inbox and spam folder."
+        ),
         "masked_email": _mask_customer_email(email_address),
     }
 
@@ -1809,10 +1814,14 @@ def momo_customer_email_verify(
             status_code=400,
             detail="Email verification code is missing or expired. Request a new code.",
         )
-    email_address = str(body.get("email") or "").strip().lower()
     code = str(body.get("code") or "").strip()
+    email_address = str(subscriber.get("email") or "").strip().lower()
     if email_address != challenge["email"]:
-        raise HTTPException(status_code=400, detail="Email address does not match the challenge.")
+        _EMAIL_VERIFICATION_CHALLENGES.pop(customer_key, None)
+        raise HTTPException(
+            status_code=400,
+            detail="The wallet email changed. Request a new verification code.",
+        )
     if not verify_one_time_code(
         code,
         challenge["code_hash"],

@@ -852,6 +852,30 @@ class SandboxCustomerEmailVerificationTests(unittest.TestCase):
         self.client.close()
         self.app_module._EMAIL_VERIFICATION_CHALLENGES.clear()
 
+    def test_email_delivery_failure_explains_smtp_checks(self):
+        self.subscriber["email"] = "customer@example.com"
+        token = auth.create_access_token(
+            user_id=0,
+            username=self.subscriber["phone_number"],
+            role="momo_customer",
+        )
+        with patch.dict(
+            os.environ, {"MTN_DISBURSEMENT_ENVIRONMENT": "sandbox"}, clear=False
+        ), patch("app.find_subscriber", return_value=self.subscriber), patch(
+            "app.send_email_verification_email", return_value=False
+        ):
+            response = self.client.post(
+                "/api/momo/customer/email/challenge",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("Render SMTP settings", response.json()["detail"])
+        self.assertNotIn(
+            self.subscriber["phone_number"],
+            self.app_module._EMAIL_VERIFICATION_CHALLENGES,
+        )
+
     def test_customer_email_requires_and_completes_an_ownership_challenge(self):
         self.subscriber["email"] = "customer@example.com"
         with patch.dict(
@@ -875,10 +899,15 @@ class SandboxCustomerEmailVerificationTests(unittest.TestCase):
             challenge = self.client.post(
                 "/api/momo/customer/email/challenge",
                 headers=headers,
-                json={"email": "customer@example.com"},
+                json={"email": "attacker@example.net"},
             )
             self.assertEqual(challenge.status_code, 200, challenge.text)
             self.assertNotIn("code", challenge.json())
+            self.assertEqual(
+                send_email.call_args.args[0],
+                "customer@example.com",
+            )
+            self.assertIn("c***@example.com", challenge.json()["message"])
             code = send_email.call_args.args[1]
             saved_challenge = self.app_module._EMAIL_VERIFICATION_CHALLENGES[
                 self.subscriber["phone_number"]
@@ -888,7 +917,7 @@ class SandboxCustomerEmailVerificationTests(unittest.TestCase):
             verified = self.client.post(
                 "/api/momo/customer/email/verify",
                 headers=headers,
-                json={"email": "customer@example.com", "code": code},
+                json={"code": code},
             )
 
         self.assertEqual(verified.status_code, 200, verified.text)

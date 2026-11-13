@@ -255,8 +255,11 @@ def send_email_verification_email(recipient_email, verification_code):
             server.sendmail(
                 smtp["from_address"], [recipient_email], message.as_string()
             )
-    except Exception:
-        logger.warning("Email ownership verification delivery failed.")
+    except (OSError, smtplib.SMTPException) as error:
+        logger.warning(
+            "Email ownership verification delivery failed (%s).",
+            type(error).__name__,
+        )
         return False
     return True
 

@@ -57,7 +57,9 @@ before storage, expire after 10 minutes (SMS) or 5 minutes (email), and are
 never returned by the API or shown in the interface. SMS requests are limited
 to three per wallet per ten minutes; five incorrect attempts block that code.
 Use a dedicated SMTP sender/mailbox and verify its domain authentication.
-Verify each tester's email in the app before testing MEDIUM-risk flows.
+After signing in, testers can select **Send code to my email**; the code goes
+to the email saved on that wallet, and the app displays only a masked address.
+Verify each tester's email before testing MEDIUM-risk flows.
 Provision named analyst/admin users through the protected operator workflow;
 never publish operator or MTN credentials. Keep MTN sandbox selected while
 public testers are using the application.
@@ -143,8 +145,9 @@ direct enrollment of a new sandbox wallet. Enrollment requires acceptance of
 the sandbox privacy notice and collects a fictional name, MTN-issued sandbox
 test number, synthetic passport/Ghana Card identifier, controlled test email,
 and demo PIN. Do not enter real identity documents or another person's data.
-Email is unverified at registration; verify an email you control in the app
-before using MEDIUM-risk step-up. The passport/ID value and PIN are stored as
+Email is unverified at registration; use the in-app email verification button
+to send a code to the address saved with the wallet before using MEDIUM-risk
+step-up. The passport/ID value and PIN are stored as
 salted hashes. This prototype does not validate documents with an official
 identity provider.
 Customers can delete

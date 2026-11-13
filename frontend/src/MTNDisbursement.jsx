@@ -147,7 +147,6 @@ export default function MTNDisbursement() {
   const [customerView, setCustomerView] = useState("signin");
   const [loginNumber, setLoginNumber] = useState("");
   const [loginPin, setLoginPin] = useState("");
-  const [verificationEmail, setVerificationEmail] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
   const [emailChallengeStarted, setEmailChallengeStarted] = useState(false);
   const [emailVerificationMessage, setEmailVerificationMessage] = useState("");
@@ -433,10 +432,8 @@ export default function MTNDisbursement() {
       const response = await fetch(`${API_URL}/api/momo/customer/email/challenge`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
           Authorization: `******`,
         },
-        body: JSON.stringify({ email: verificationEmail }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Could not send verification email.");
@@ -462,7 +459,6 @@ export default function MTNDisbursement() {
           Authorization: `******`,
         },
         body: JSON.stringify({
-          email: verificationEmail,
           code: verificationCode,
         }),
       });
@@ -1072,8 +1068,10 @@ export default function MTNDisbursement() {
               <section className="security-code-setup" aria-labelledby="email-verification-title">
                 <h4 id="email-verification-title">Verify your email for transaction security</h4>
                 <p>
-                  MEDIUM-risk transactions require a one-time code sent to your verified email.
-                  Use an address you control; the code is never shown in this app.
+                  MEDIUM-risk transactions require a one-time code. We’ll send it to the
+                  email saved on this wallet:{" "}
+                  <strong>{customerAccount.masked_email || "unavailable"}</strong>.
+                  The code is never shown in this app.
                 </p>
                 {emailVerificationMessage && (
                   <p className="security-code-setup-message" role="status">
@@ -1082,25 +1080,15 @@ export default function MTNDisbursement() {
                 )}
                 {!emailChallengeStarted ? (
                   <form onSubmit={handleRequestEmailVerification} className="transaction-form">
-                    <label className="field-block">
-                      Email address
-                      <input
-                        type="email"
-                        required
-                        autoComplete="email"
-                        value={verificationEmail}
-                        onChange={(event) => setVerificationEmail(event.target.value)}
-                        className="standard-input"
-                      />
-                    </label>
                     <button type="submit" className="primary-action-btn" disabled={loading}>
-                      {loading ? "Sending…" : "Send verification code"}
+                      {loading ? "Sending…" : "Send code to my email"}
                     </button>
                   </form>
                 ) : (
                   <form onSubmit={handleVerifyEmail} className="transaction-form">
                     <label className="field-block">
-                      Six-digit email code
+                      Six-digit code sent to{" "}
+                      {customerAccount.masked_email || "your saved email"}
                       <input
                         type="password"
                         required
