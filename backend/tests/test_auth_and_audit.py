@@ -61,6 +61,28 @@ class PasswordAndTokenTests(unittest.TestCase):
         )
         self.assertIsNone(auth.decode_access_token(token))
 
+    def test_auth_secret_without_environment_value_persists_with_database_disk(self):
+        original_database_path = database.DATABASE_PATH
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, {"MOMO_AUTH_SECRET": ""}
+        ):
+            database.DATABASE_PATH = Path(temp_dir) / "fraud.db"
+            try:
+                token = auth.create_access_token(
+                    user_id=0,
+                    username="sandbox-customer",
+                    role="momo_customer",
+                )
+                secret_path = Path(temp_dir) / ".auth_secret"
+                self.assertTrue(secret_path.is_file())
+
+                database.DATABASE_PATH = Path(temp_dir) / "restarted-fraud.db"
+                claims = auth.decode_access_token(token)
+                self.assertIsNotNone(claims)
+                self.assertEqual(claims["username"], "sandbox-customer")
+            finally:
+                database.DATABASE_PATH = original_database_path
+
 
 class AuditHashChainTests(unittest.TestCase):
     def setUp(self):

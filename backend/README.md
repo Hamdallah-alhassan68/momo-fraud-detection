@@ -47,6 +47,10 @@ and audit secrets, and stores SQLite at `/var/data/fraud.db` on a 1 GB
 persistent disk. Render requires a paid web-service plan for persistent disks.
 Keep the service at one instance while using its SQLite database and
 in-process event stream.
+If `MOMO_AUTH_SECRET` is not set, the backend stores its fallback signing key
+beside the database on that persistent disk so wallet sessions remain valid
+after a deployment restart. Configure the generated Render secret and do not
+scale this SQLite-backed service to multiple instances.
 
 The Blueprint selects MTN sandbox and disables the bundled demo-admin accounts
 for hosted deployments. Configure Africa's Talking and SMTP secrets in Render

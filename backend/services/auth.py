@@ -47,17 +47,38 @@ def _auth_secret() -> bytes:
     if configured:
         return configured.encode("utf-8")
 
-    # Persist an ephemeral key on disk across worker restarts during development if not explicitly configured
-    token_file = database.BASE_DIR / ".auth_secret"
+    # Keep fallback-signed sessions valid across deployments when using a
+    # persistent database disk and no explicit secret has been configured.
+    token_file = database.DATABASE_PATH.parent / ".auth_secret"
+    legacy_token_file = database.BASE_DIR / ".auth_secret"
     try:
+        token_file.parent.mkdir(parents=True, exist_ok=True)
         if token_file.exists():
             content = token_file.read_bytes().strip()
             if len(content) >= 32:
                 return content
-        new_secret = secrets.token_hex(32).encode("utf-8")
-        token_file.write_bytes(new_secret)
+        try:
+            new_secret = legacy_token_file.read_bytes().strip()
+        except FileNotFoundError:
+            new_secret = secrets.token_hex(32).encode("utf-8")
+        if len(new_secret) < 32:
+            new_secret = secrets.token_hex(32).encode("utf-8")
+        try:
+            with token_file.open("xb") as secret_file:
+                secret_file.write(new_secret)
+                secret_file.flush()
+                os.fsync(secret_file.fileno())
+        except FileExistsError:
+            content = token_file.read_bytes().strip()
+            if len(content) >= 32:
+                return content
+            raise OSError("Persistent authentication secret is invalid.")
         return new_secret
-    except Exception:
+    except OSError as error:
+        logger.warning(
+            "Could not read or persist the authentication secret on the database disk: %s",
+            error,
+        )
         if not hasattr(_auth_secret, "_fallback_secret"):
             _auth_secret._fallback_secret = secrets.token_hex(32).encode("utf-8")
         return _auth_secret._fallback_secret
