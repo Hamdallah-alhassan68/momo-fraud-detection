@@ -111,6 +111,70 @@ class OtpDeliveryTests(unittest.TestCase):
         self.assertIn("expires in 10 minutes", decoded_message)
         self.assertEqual(outbox, [])
 
+    def test_medium_risk_email_uses_brevo_https_api_when_configured(self):
+        response = Mock()
+        with patch(
+            "services.email_service.get_smtp_config",
+            return_value={
+                "configured": True,
+                "host": "",
+                "port": 587,
+                "user": "",
+                "password": "",
+                "from_address": "verified@example.com",
+                "use_tls": True,
+                "brevo_configured": True,
+                "brevo_api_key": "test-api-key",
+            },
+        ), patch.dict(
+            os.environ, {"SMTP_FROM": "verified@example.com"}, clear=False
+        ), patch("services.email_service.httpx.post", return_value=response) as post, patch(
+            "services.email_service.smtplib.SMTP"
+        ) as smtp:
+            self.assertTrue(
+                send_medium_risk_otp_email(
+                    "tester@example.com",
+                    "654321",
+                    {"transaction_type": "TRANSFER", "amount": 5},
+                )
+            )
+
+        args, kwargs = post.call_args
+        self.assertEqual(args[0], "https://api.brevo.com/v3/smtp/email")
+        self.assertEqual(kwargs["headers"], {"api-key": "test-api-key"})
+        self.assertEqual(kwargs["json"]["sender"]["email"], "verified@example.com")
+        self.assertEqual(kwargs["json"]["to"], [{"email": "tester@example.com"}])
+        self.assertIn("654321", kwargs["json"]["textContent"])
+        smtp.assert_not_called()
+
+    def test_medium_risk_email_reports_brevo_delivery_failure(self):
+        import httpx
+
+        response = Mock()
+        response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "request failed",
+            request=Mock(),
+            response=Mock(status_code=401),
+        )
+        with patch(
+            "services.email_service.get_smtp_config",
+            return_value={
+                "configured": True,
+                "host": "",
+                "port": 587,
+                "user": "",
+                "password": "",
+                "from_address": "verified@example.com",
+                "use_tls": True,
+                "brevo_configured": True,
+                "brevo_api_key": "test-api-key",
+            },
+        ), patch.dict(
+            os.environ, {"SMTP_FROM": "verified@example.com"}, clear=False
+        ), patch("services.email_service.httpx.post", return_value=response):
+            with self.assertRaisesRegex(OtpDeliveryError, "No transaction was completed"):
+                send_medium_risk_otp_email("tester@example.com", "654321")
+
     def test_one_time_code_hash_is_context_bound_and_not_plaintext(self):
         saved = hash_one_time_code("123456", "session-a")
         self.assertNotIn("123456", saved)

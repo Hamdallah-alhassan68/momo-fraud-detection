@@ -10,6 +10,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
+import httpx
+
 from services import events
 from services.otp_delivery import OtpDeliveryError
 
@@ -33,27 +35,51 @@ def get_smtp_config():
         or os.getenv("SMTP_PASS", "").strip()
         or os.getenv("GMAIL_APP_PASSWORD", "").strip()
     )
-    from_address = os.getenv("SMTP_FROM", "").strip() or user or "security@momosentinel.com"
+    explicit_from_address = os.getenv("SMTP_FROM", "").strip()
+    from_address = explicit_from_address or user or "security@momosentinel.com"
     use_tls = os.getenv("SMTP_TLS", "true").strip().lower() in ("true", "1", "yes")
+    brevo_api_key = os.getenv("BREVO_API_KEY", "").strip()
 
-    is_configured = bool(host and user and password) or bool(
-        "smtp.gmail.com" in host or ("@gmail.com" in user and password)
-    )
     if not host and "@gmail.com" in user:
         host = "smtp.gmail.com"
         port = 587
         use_tls = True
-        is_configured = bool(user and password)
+
+    smtp_configured = bool(host and user and password)
+    brevo_configured = bool(brevo_api_key and explicit_from_address)
+    is_configured = smtp_configured or brevo_configured
 
     return {
         "configured": is_configured,
+        "smtp_configured": smtp_configured,
+        "brevo_configured": brevo_configured,
         "host": host,
         "port": port,
         "user": user,
         "password": password,
         "from_address": from_address,
         "use_tls": use_tls,
+        "brevo_api_key": brevo_api_key,
     }
+
+
+def _send_via_brevo(smtp, recipient_email, subject, text_content, html_content=None):
+    payload = {
+        "sender": {"email": smtp["from_address"]},
+        "to": [{"email": recipient_email}],
+        "subject": subject,
+        "textContent": text_content,
+    }
+    if html_content:
+        payload["htmlContent"] = html_content
+
+    response = httpx.post(
+        "https://api.brevo.com/v3/smtp/email",
+        headers={"api-key": smtp["brevo_api_key"]},
+        json=payload,
+        timeout=10.0,
+    )
+    response.raise_for_status()
 
 
 def send_step_up_email(recipient_email, otp_code, transaction_details=None):
@@ -165,13 +191,28 @@ MoMo Sentinel Hybrid Fraud Protection
             msg.attach(MIMEText(plain_text, "plain", "utf-8"))
             msg.attach(MIMEText(html_content, "html", "utf-8"))
 
-            with smtplib.SMTP(smtp["host"], smtp["port"], timeout=10.0) as server:
-                if smtp["use_tls"]:
-                    server.starttls()
-                server.login(smtp["user"], smtp["password"])
-                server.sendmail(smtp["from_address"], [recipient_email], msg.as_string())
-            delivery_status = "SENT_VIA_SMTP"
-            logger.info("Real Step-Up OTP email sent via SMTP to %s", recipient_email)
+            if smtp.get("brevo_configured", False):
+                _send_via_brevo(
+                    smtp, recipient_email, subject, plain_text, html_content
+                )
+            else:
+                with smtplib.SMTP(smtp["host"], smtp["port"], timeout=10.0) as server:
+                    if smtp["use_tls"]:
+                        server.starttls()
+                    server.login(smtp["user"], smtp["password"])
+                    server.sendmail(
+                        smtp["from_address"], [recipient_email], msg.as_string()
+                    )
+            delivery_status = (
+                "SENT_VIA_BREVO_API"
+                if smtp.get("brevo_configured", False)
+                else "SENT_VIA_SMTP"
+            )
+            logger.info(
+                "Real Step-Up OTP email sent via %s to %s",
+                "Brevo API" if smtp.get("brevo_configured", False) else "SMTP",
+                recipient_email,
+            )
         except Exception as error:
             delivery_status = "SMTP_FAILED_SAVED_TO_OUTBOX"
             delivery_error = str(error)
@@ -220,7 +261,7 @@ MoMo Sentinel Hybrid Fraud Protection
         pass
 
     return {
-        "delivered": delivery_status == "SENT_VIA_SMTP",
+        "delivered": delivery_status in ("SENT_VIA_SMTP", "SENT_VIA_BREVO_API"),
         "delivery_status": delivery_status,
         "delivery_error": delivery_error,
         "smtp_configured": smtp["configured"],
@@ -248,14 +289,22 @@ def send_email_verification_email(recipient_email, verification_code):
     message["Date"] = email.utils.formatdate(localtime=True)
 
     try:
-        with smtplib.SMTP(smtp["host"], smtp["port"], timeout=10.0) as server:
-            if smtp["use_tls"]:
-                server.starttls()
-            server.login(smtp["user"], smtp["password"])
-            server.sendmail(
-                smtp["from_address"], [recipient_email], message.as_string()
+        if smtp.get("brevo_configured", False):
+            _send_via_brevo(
+                smtp,
+                recipient_email,
+                message["Subject"],
+                message.get_payload(decode=True).decode("utf-8"),
             )
-    except (OSError, smtplib.SMTPException) as error:
+        else:
+            with smtplib.SMTP(smtp["host"], smtp["port"], timeout=10.0) as server:
+                if smtp["use_tls"]:
+                    server.starttls()
+                server.login(smtp["user"], smtp["password"])
+                server.sendmail(
+                    smtp["from_address"], [recipient_email], message.as_string()
+                )
+    except (OSError, smtplib.SMTPException, httpx.HTTPError) as error:
         logger.warning(
             "Email ownership verification delivery failed (%s).",
             type(error).__name__,
@@ -267,9 +316,14 @@ def send_email_verification_email(recipient_email, verification_code):
 def send_medium_risk_otp_email(recipient_email, otp_code, transaction_details=None):
     """Deliver a short-lived MEDIUM-risk OTP without persisting or publishing it."""
     smtp = get_smtp_config()
+    brevo_api_key = smtp.get("brevo_api_key", "")
+    if brevo_api_key and not os.getenv("SMTP_FROM", "").strip():
+        raise OtpDeliveryError(
+            "Set SMTP_FROM to an email sender verified in Brevo before requesting email verification."
+        )
     if not smtp["configured"]:
         raise OtpDeliveryError(
-            "Email OTP delivery is not configured. Configure SMTP before authorizing MEDIUM-risk transfers."
+            "Email OTP delivery is not configured. Configure BREVO_API_KEY and a verified SMTP_FROM sender, or authenticated SMTP."
         )
 
     recipient_email = str(recipient_email or "").strip()
@@ -302,15 +356,26 @@ def send_medium_risk_otp_email(recipient_email, otp_code, transaction_details=No
     message["Date"] = email.utils.formatdate(localtime=True)
 
     try:
-        with smtplib.SMTP(smtp["host"], smtp["port"], timeout=5.0) as server:
-            if smtp["use_tls"]:
-                server.starttls()
-            server.login(smtp["user"], smtp["password"])
-            server.sendmail(
-                smtp["from_address"], [recipient_email], message.as_string()
+        if smtp.get("brevo_configured", False):
+            _send_via_brevo(
+                smtp,
+                recipient_email,
+                message["Subject"],
+                message.get_payload(decode=True).decode("utf-8"),
             )
-    except (OSError, smtplib.SMTPException) as error:
-        logger.warning("MEDIUM-risk OTP email delivery failed.")
+        else:
+            with smtplib.SMTP(smtp["host"], smtp["port"], timeout=10.0) as server:
+                if smtp["use_tls"]:
+                    server.starttls()
+                server.login(smtp["user"], smtp["password"])
+                server.sendmail(
+                    smtp["from_address"], [recipient_email], message.as_string()
+                )
+    except (OSError, smtplib.SMTPException, httpx.HTTPError) as error:
+        logger.warning(
+            "MEDIUM-risk OTP email delivery failed (%s).",
+            type(error).__name__,
+        )
         raise OtpDeliveryError(
             "Email delivery failed. No transaction was completed; please try again."
         ) from error

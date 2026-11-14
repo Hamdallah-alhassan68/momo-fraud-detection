@@ -64,7 +64,15 @@ before storage, expire after 10 minutes, and are
 never returned by the API or shown in the interface. SMS requests are limited
 to three per wallet per ten minutes; five incorrect attempts block that code.
 Email codes can be requested again after a 60-second cooldown.
-Use a dedicated SMTP sender/mailbox and verify its domain authentication.
+For MEDIUM-risk authorization, Brevo's HTTPS transactional-email API is
+preferred; it avoids depending on direct SMTP connections from the hosting
+service. Set `BREVO_API_KEY` to a Brevo transactional API key and `SMTP_FROM`
+to an email sender verified in Brevo. Alternatively, configure authenticated
+SMTP with `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, and
+`SMTP_FROM`; use a provider app password when required (for example, Gmail
+requires an App Password rather than the account password). No wallet-user
+external login is needed for mail delivery. Keep all provider credentials in
+the backend host's secret settings, never in the frontend or repository.
 For MEDIUM-risk flows, the wallet UI offers email code or passport/ID
 verification; entering the correct factor continues the pending simulation
 transfer. The email address is shown masked and need not be separately verified
