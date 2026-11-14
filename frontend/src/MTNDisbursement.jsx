@@ -638,7 +638,7 @@ export default function MTNDisbursement() {
         `${API_URL}/api/momo/transaction/${session.session_id}/step-up/email`,
         {
           method: "POST",
-          headers: { Authorization: `******` },
+          headers: { Authorization: `Bearer ${customerToken}` },
         },
       );
       const data = await response.json();
