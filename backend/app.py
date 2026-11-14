@@ -1732,12 +1732,12 @@ def momo_transaction_step_up_email(
         if len(parts) == 2 and parts[0].lower() == "bearer"
         else None
     )
-    if len(parts) == 2 and parts[0].lower() == "bearer" and claims is None:
+    if authorization and claims is None and not x_admin_token:
         raise HTTPException(
             status_code=401,
             detail=(
-                "Your wallet sign-in has expired. Sign in again before "
-                "requesting an email verification code."
+                "Your wallet sign-in could not be validated. Sign out of the "
+                "sandbox wallet and sign in again before requesting an email code."
             ),
         )
     if claims and claims.get("role") == "momo_customer":
@@ -1751,10 +1751,20 @@ def momo_transaction_step_up_email(
                 status_code=403,
                 detail="This sandbox transaction belongs to a different wallet.",
             )
-    else:
+    elif x_admin_token:
         require_analyst(
             x_admin_token=x_admin_token,
             authorization=authorization,
+        )
+    elif claims:
+        require_analyst(
+            x_admin_token=x_admin_token,
+            authorization=authorization,
+        )
+    else:
+        raise HTTPException(
+            status_code=401,
+            detail="Sign in to the sandbox wallet before requesting an email code.",
         )
     try:
         return momo_request_step_up_email(session_id)

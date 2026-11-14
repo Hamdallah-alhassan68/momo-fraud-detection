@@ -1171,6 +1171,24 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
                 "STEP_UP",
             )
 
+            missing_token_response = self.client.post(
+                f"/api/momo/transaction/{started.json()['session_id']}/step-up/email",
+            )
+            self.assertEqual(missing_token_response.status_code, 401)
+            self.assertIn(
+                "Sign in to the sandbox wallet",
+                missing_token_response.json()["detail"],
+            )
+            malformed_token_response = self.client.post(
+                f"/api/momo/transaction/{started.json()['session_id']}/step-up/email",
+                headers={"Authorization": "Bearer malformed-token"},
+            )
+            self.assertEqual(malformed_token_response.status_code, 401)
+            self.assertIn(
+                "could not be validated",
+                malformed_token_response.json()["detail"],
+            )
+
             expired_token = auth.create_access_token(
                 user_id=0,
                 username=self.phone,
@@ -1183,7 +1201,7 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
             )
             self.assertEqual(expired_response.status_code, 401)
             self.assertIn(
-                "wallet sign-in has expired",
+                "could not be validated",
                 expired_response.json()["detail"],
             )
 
