@@ -1241,6 +1241,19 @@ def mtn_collection_request_to_pay(
             "message": "Blocked by the fraud model. No payment request was sent to MTN.",
         }
 
+    if risk_assessment["risk_level"] == "MEDIUM":
+        return {
+            "status": "STEP_UP_REQUIRED",
+            "mtn_reference_id": None,
+            "transaction_reference": transaction_reference,
+            "currency": configuration["currency"],
+            "risk_assessment": risk_assessment,
+            "message": (
+                "Additional verification is required. No MTN payment request "
+                "was sent."
+            ),
+        }
+
     try:
         payment = get_mtn_collection_client().request_to_pay(
             amount=normalized_amount,

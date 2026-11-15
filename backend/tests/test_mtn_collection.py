@@ -285,6 +285,37 @@ class MtnFraudGateRouteTests(unittest.TestCase):
         self.assertEqual(payload["risk_assessment"]["risk_level"], "HIGH")
         get_client.assert_not_called()
 
+    def test_medium_risk_requires_step_up_before_mtn_request(self):
+        assessment = {
+            "risk_score": 0.48,
+            "risk_level": "MEDIUM",
+            "decision": "STEP-UP VERIFICATION",
+            "isolation_forest_score": 0.5,
+            "rule_score": 0.3,
+            "reasons": ["IP/network mismatch"],
+        }
+        with patch(
+            "app.fraud_detector.assess_transaction",
+            return_value=assessment,
+        ), patch("app.get_mtn_collection_client") as get_client:
+            response = self.client.post(
+                "/api/momo/mtn/collection/request-to-pay",
+                headers=self.headers,
+                json={
+                    "amount": "5.00",
+                    "payer_msisdn": "233241234567",
+                    "production_confirmed": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["status"], "STEP_UP_REQUIRED")
+        self.assertIsNone(payload["mtn_reference_id"])
+        self.assertEqual(payload["risk_assessment"]["risk_level"], "MEDIUM")
+        self.assertIn("No MTN payment request was sent", payload["message"])
+        get_client.assert_not_called()
+
     def test_assess_endpoint_returns_risk_without_contacting_mtn(self):
         assessment = {
             "risk_score": 0.1,
