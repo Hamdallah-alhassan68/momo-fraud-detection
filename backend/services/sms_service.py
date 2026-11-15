@@ -1,11 +1,14 @@
 """Africa's Talking SMS delivery for pilot transaction OTPs."""
 
+import logging
 import os
 import re
 
 import httpx
 
 from services.otp_delivery import OtpDeliveryError
+
+logger = logging.getLogger(__name__)
 
 
 def _get_africastalking_config():
@@ -99,7 +102,29 @@ def send_transaction_otp_sms(phone_number, otp_code, transaction_details=None):
             )
     except OtpDeliveryError:
         raise
-    except (httpx.HTTPError, ValueError, TypeError) as error:
+    except httpx.HTTPStatusError as error:
+        logger.warning(
+            "Africa's Talking SMS request failed with HTTP %d.",
+            error.response.status_code,
+        )
+        raise OtpDeliveryError(
+            "Africa's Talking rejected the SMS request (HTTP "
+            f"{error.response.status_code}). Check the sandbox API key and account settings. "
+            "No transaction was started."
+        ) from error
+    except httpx.RequestError as error:
+        logger.warning(
+            "Africa's Talking SMS request failed (%s).",
+            type(error).__name__,
+        )
+        raise OtpDeliveryError(
+            "Could not connect to Africa's Talking. No transaction was started; please try again."
+        ) from error
+    except (ValueError, TypeError) as error:
+        logger.warning(
+            "Africa's Talking returned an invalid SMS response (%s).",
+            type(error).__name__,
+        )
         raise OtpDeliveryError(
             "SMS delivery failed. No transaction was started; please try again."
         ) from error

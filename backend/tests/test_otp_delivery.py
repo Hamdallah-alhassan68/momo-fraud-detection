@@ -63,6 +63,33 @@ class OtpDeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(OtpDeliveryError, "did not accept"):
                 send_transaction_otp_sms("0241234567", "123456")
 
+    def test_sms_http_error_logs_status_without_credentials(self):
+        import httpx
+
+        response = Mock()
+        response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "request failed",
+            request=Mock(),
+            response=Mock(status_code=401),
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "AFRICASTALKING_ENVIRONMENT": "sandbox",
+                "AFRICASTALKING_USERNAME": "sandbox",
+                "AFRICASTALKING_API_KEY": "test-key-not-a-secret",
+            },
+            clear=False,
+        ), patch("services.sms_service.httpx.post", return_value=response), patch(
+            "services.sms_service.logger.warning"
+        ) as warning:
+            with self.assertRaisesRegex(OtpDeliveryError, "HTTP 401"):
+                send_transaction_otp_sms("0241234567", "123456")
+        warning.assert_called_once_with(
+            "Africa's Talking SMS request failed with HTTP %d.",
+            401,
+        )
+
     def test_sms_rejects_non_ghana_numbers_before_provider_request(self):
         with patch.dict(
             os.environ,
