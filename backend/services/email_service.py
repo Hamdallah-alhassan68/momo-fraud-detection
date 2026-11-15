@@ -371,6 +371,14 @@ def send_medium_risk_otp_email(recipient_email, otp_code, transaction_details=No
                 server.sendmail(
                     smtp["from_address"], [recipient_email], message.as_string()
                 )
+    except httpx.HTTPStatusError as error:
+        logger.warning(
+            "MEDIUM-risk OTP email delivery failed: Brevo API returned HTTP %d.",
+            error.response.status_code,
+        )
+        raise OtpDeliveryError(
+            "Brevo rejected the email request. Check that BREVO_API_KEY is an active API key and SMTP_FROM is a verified Brevo sender. No transaction was completed."
+        ) from error
     except (OSError, smtplib.SMTPException, httpx.HTTPError) as error:
         logger.warning(
             "MEDIUM-risk OTP email delivery failed (%s).",

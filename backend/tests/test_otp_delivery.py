@@ -171,9 +171,15 @@ class OtpDeliveryTests(unittest.TestCase):
             },
         ), patch.dict(
             os.environ, {"SMTP_FROM": "verified@example.com"}, clear=False
-        ), patch("services.email_service.httpx.post", return_value=response):
+        ), patch("services.email_service.httpx.post", return_value=response), patch(
+            "services.email_service.logger.warning"
+        ) as warning:
             with self.assertRaisesRegex(OtpDeliveryError, "No transaction was completed"):
                 send_medium_risk_otp_email("tester@example.com", "654321")
+        warning.assert_called_once_with(
+            "MEDIUM-risk OTP email delivery failed: Brevo API returned HTTP %d.",
+            401,
+        )
 
     def test_one_time_code_hash_is_context_bound_and_not_plaintext(self):
         saved = hash_one_time_code("123456", "session-a")
