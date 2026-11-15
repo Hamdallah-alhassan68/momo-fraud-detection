@@ -627,6 +627,10 @@
   color: #64748b;
 }
 
+.field-hint.otp-expired {
+  color: #b91c1c;
+}
+
 .account-session-card {
   padding: 12px;
   background: #f8fafc;

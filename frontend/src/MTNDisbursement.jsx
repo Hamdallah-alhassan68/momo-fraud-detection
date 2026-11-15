@@ -178,6 +178,8 @@ export default function MTNDisbursement() {
   // Authentication & Fraud Enforcement
   const [session, setSession] = useState(null);
   const [authPin, setAuthPin] = useState("");
+  const [smsOtpCodeExpiresAt, setSmsOtpCodeExpiresAt] = useState(null);
+  const [smsOtpClockNow, setSmsOtpClockNow] = useState(0);
   const [stepUpInput, setStepUpInput] = useState("");
   const [stepUpMethod, setStepUpMethod] = useState("");
   const [stepUpEmailSent, setStepUpEmailSent] = useState(false);
@@ -228,12 +230,30 @@ export default function MTNDisbursement() {
     : 0;
   const stepUpCodeCountdown = `${String(Math.floor(stepUpSecondsLeft / 60)).padStart(2, "0")}:${String(stepUpSecondsLeft % 60).padStart(2, "0")}`;
   const stepUpResendCountdown = `${String(Math.floor(stepUpResendSecondsLeft / 60)).padStart(2, "0")}:${String(stepUpResendSecondsLeft % 60).padStart(2, "0")}`;
+  const smsOtpSecondsLeft = smsOtpCodeExpiresAt
+    ? Math.max(0, Math.ceil((smsOtpCodeExpiresAt - smsOtpClockNow) / 1000))
+    : 0;
+  const smsOtpCountdown = `${String(Math.floor(smsOtpSecondsLeft / 60)).padStart(2, "0")}:${String(smsOtpSecondsLeft % 60).padStart(2, "0")}`;
+  const smsOtpExpired =
+    session?.verification_method === "OTP" && smsOtpSecondsLeft <= 0;
 
   useEffect(() => {
     if (step !== "stepup" || !stepUpCodeExpiresAt) return undefined;
     const timer = window.setInterval(() => setStepUpClockNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [step, stepUpCodeExpiresAt]);
+
+  useEffect(() => {
+    if (
+      step !== "auth" ||
+      session?.verification_method !== "OTP" ||
+      !smsOtpCodeExpiresAt
+    ) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => setSmsOtpClockNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [step, session?.verification_method, smsOtpCodeExpiresAt]);
 
   // Recipient live lookup as user types
   useEffect(() => {
@@ -543,6 +563,14 @@ export default function MTNDisbursement() {
 
       setSession(data);
       setAuthPin("");
+      if (data.verification_method === "OTP") {
+        const now = Date.now();
+        const expiresInSeconds = Number(data.otp_expires_in_seconds || 600);
+        setSmsOtpClockNow(now);
+        setSmsOtpCodeExpiresAt(now + expiresInSeconds * 1000);
+      } else {
+        setSmsOtpCodeExpiresAt(null);
+      }
       setStep("auth");
     } catch (err) {
       setError(err.message || "Failed to initiate transfer.");
@@ -1548,6 +1576,15 @@ export default function MTNDisbursement() {
                       }
                       className="large-code-input"
                     />
+                    <p
+                      className={`field-hint${smsOtpExpired ? " otp-expired" : ""}`}
+                      role="status"
+                      aria-live="polite"
+                    >
+                      {smsOtpExpired
+                        ? "Code expired. Go back and start a new transfer to request another code."
+                        : `Code expires in ${smsOtpCountdown}.`}
+                    </p>
                   </div>
                 )}
 
@@ -1566,6 +1603,7 @@ export default function MTNDisbursement() {
                     onClick={handleAuthorizePayment}
                     disabled={
                       loading ||
+                      smsOtpExpired ||
                       authPin.length !== (transactionType === "TRANSFER" ? 4 : 6)
                     }
                   >

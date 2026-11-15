@@ -1274,6 +1274,7 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
                 )
 
         self.assertEqual(started.status_code, 200, started.text)
+        self.assertEqual(started.json()["otp_expires_in_seconds"], 600)
         otp_code = send_sms.call_args.args[1]
         self.assertEqual(send_sms.call_args.args[0], self.phone)
         self.assertNotIn(otp_code, started.text)

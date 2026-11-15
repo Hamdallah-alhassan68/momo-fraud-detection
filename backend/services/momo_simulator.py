@@ -65,6 +65,7 @@ from services.input_validation import (
 )
 
 GHANA_TIMEZONE = ZoneInfo("Africa/Accra")
+TRANSACTION_OTP_TTL_SECONDS = 10 * 60
 STEP_UP_EMAIL_CODE_TTL_SECONDS = 10 * 60
 STEP_UP_EMAIL_RESEND_COOLDOWN_SECONDS = 60
 
@@ -575,7 +576,8 @@ def initiate_transaction(
         otp_hash = hash_one_time_code(otp_code, session_id)
         otp_code = None
         otp_expires_at = (
-            datetime.now(timezone.utc) + timedelta(minutes=10)
+            datetime.now(timezone.utc)
+            + timedelta(seconds=TRANSACTION_OTP_TTL_SECONDS)
         ).isoformat()
     else:
         otp_expires_at = None
@@ -610,6 +612,11 @@ def initiate_transaction(
         "session_id": session_id,
         "verification_method": verification,
         "message": message,
+        **(
+            {"otp_expires_in_seconds": TRANSACTION_OTP_TTL_SECONDS}
+            if verification == "OTP"
+            else {}
+        ),
         **({"demo_hint": demo_hint} if not live_mtn and demo_hint else {}),
         "customer_name": customer["name"],
         "amount": amount,
