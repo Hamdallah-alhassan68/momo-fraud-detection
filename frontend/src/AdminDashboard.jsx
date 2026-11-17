@@ -1,5 +1,5 @@
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { adminFetch, getCurrentUser, subscribeAdminEvents } from "./adminApi.js";
 import { describeRiskSignal } from "./riskSignals.js";
 import "./AdminDashboard.css";
@@ -17,6 +17,12 @@ function getCaseStatusPresentation(status) {
   }
 }
 
+function getFreezeReasonLabel(reason) {
+  if (reason === "ADMIN_MANUAL") return "Manual administrator freeze";
+  if (reason === "FROZEN_BY_CUSTOMER") return "Security freeze requested by customer";
+  return reason || "Not recorded";
+}
+
 function AdminDashboard({ currentUser: propUser } = {}) {
   const currentUser = propUser || getCurrentUser();
   const role = currentUser?.role || "admin";
@@ -28,6 +34,9 @@ function AdminDashboard({ currentUser: propUser } = {}) {
   const [accounts, setAccounts] = useState([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [accountsError, setAccountsError] = useState("");
+  const [unfreezeRequests, setUnfreezeRequests] = useState([]);
+  const [unfreezeRequestsLoading, setUnfreezeRequestsLoading] = useState(true);
+  const [unfreezeRequestsError, setUnfreezeRequestsError] = useState("");
   const [updatingCustomer, setUpdatingCustomer] = useState("");
   const [alertsLoading, setAlertsLoading] = useState(true);
   const [alertsError, setAlertsError] = useState("");
@@ -105,14 +114,38 @@ async function loadAlerts() {
     }
   }
 
+  const loadUnfreezeRequests = useCallback(async () => {
+    if (!isAdmin) {
+      setUnfreezeRequestsLoading(false);
+      return;
+    }
+
+    setUnfreezeRequestsLoading(true);
+    setUnfreezeRequestsError("");
+    try {
+      const response = await adminFetch("/api/admin/account-unfreeze-requests");
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Unable to load customer requests.");
+      }
+      setUnfreezeRequests(data.requests || []);
+    } catch (err) {
+      setUnfreezeRequestsError(err.message || "Could not load customer requests.");
+    } finally {
+      setUnfreezeRequestsLoading(false);
+    }
+  }, [isAdmin]);
+
   useEffect(() => {
     loadCases();
     loadAlerts();
     loadAccounts();
+    loadUnfreezeRequests();
 
     const unsubscribe = subscribeAdminEvents((payload) => {
       if (payload.event === "case") loadCases();
       if (payload.event === "stats") loadAccounts();
+      if (payload.event === "audit") loadUnfreezeRequests();
       if (payload.event === "alert" || payload.event === "transaction") {
         loadAlerts();
         loadCases();
@@ -123,7 +156,7 @@ async function loadAlerts() {
       unsubscribe();
       stopRingtone();
     };
-  }, []);
+  }, [loadUnfreezeRequests]);
 
   function stopRingtone() {
     if (ringtoneTimer.current !== null) {
@@ -403,7 +436,7 @@ async function loadAlerts() {
         throw new Error(data.detail || "Unable to unfreeze account.");
       }
 
-      await Promise.all([loadAccounts(), loadCases()]);
+      await Promise.all([loadAccounts(), loadCases(), loadUnfreezeRequests()]);
       setSelectedCase((current) =>
         current?.customer_ref === customerRef
           ? {
@@ -569,6 +602,81 @@ async function loadAlerts() {
     </div>
   )}
 </section>
+
+{isAdmin && (
+  <section className="cases-panel unfreeze-requests-panel">
+    <div className="panel-heading">
+      <div>
+        <h2>Customer unfreeze requests</h2>
+        <p>Review the customer’s message and wallet freeze before taking action.</p>
+      </div>
+      <strong>
+        {unfreezeRequests.filter((request) => request.pending).length} pending
+      </strong>
+    </div>
+
+    {unfreezeRequestsError && (
+      <p className="dashboard-error">{unfreezeRequestsError}</p>
+    )}
+    {unfreezeRequestsLoading ? (
+      <p className="empty-state">Loading customer requests...</p>
+    ) : unfreezeRequests.length === 0 ? (
+      <p className="empty-state">No customer unfreeze requests have been submitted.</p>
+    ) : (
+      <div className="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Customer</th>
+              <th>Freeze reason</th>
+              <th>Customer message</th>
+              <th>Requested</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {unfreezeRequests.map((request) => (
+              <tr key={request.id}>
+                <td className="mono">{request.customer_ref}</td>
+                <td>
+                  {getFreezeReasonLabel(
+                    request.current_freeze_reason || request.freeze_reason,
+                  )}
+                </td>
+                <td className="unfreeze-request-message">
+                  {request.message || "No message provided"}
+                </td>
+                <td>
+                  {request.created_at
+                    ? new Date(request.created_at).toLocaleString()
+                    : "—"}
+                </td>
+                <td>{request.pending ? "Pending review" : "No longer pending"}</td>
+                <td>
+                  {request.pending && (
+                    <button
+                      type="button"
+                      className="unfreeze-account-button account-list-unfreeze"
+                      onClick={() =>
+                        unfreezeCustomerAccount(request.customer_ref)
+                      }
+                      disabled={Boolean(updatingCustomer)}
+                    >
+                      {updatingCustomer === request.customer_ref
+                        ? "Updating..."
+                        : "Unfreeze account"}
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </section>
+)}
 
 <section className="cases-panel frozen-accounts-panel">
   <div className="panel-heading">

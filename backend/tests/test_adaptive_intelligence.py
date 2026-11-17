@@ -618,6 +618,29 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
         ):
             momo_simulator.verify_transaction(session["session_id"], "2233")
 
+    def test_admin_freeze_reports_admin_unfreeze_path_after_pin(self):
+        from services import momo_simulator
+
+        database.set_account_frozen("WALLET-1001", "ADMIN_MANUAL")
+        session = momo_simulator.initiate_transaction(
+            customer_ref="WALLET-1001",
+            transaction_type="TRANSFER",
+            amount=25,
+            recipient="WALLET-2001",
+        )
+
+        with self.assertRaisesRegex(ValueError, "Incorrect PIN/OTP"):
+            momo_simulator.verify_transaction(session["session_id"], "0000")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Manual administrator freeze.*request for review",
+        ):
+            momo_simulator.verify_transaction(session["session_id"], "2233")
+
+        with self.assertRaisesRegex(ValueError, "applied by support"):
+            momo_simulator.unfreeze_account("WALLET-1001", "2233")
+
     def test_resolved_analyst_outcomes_are_returned_as_a_daily_trend(self):
         for index, decision in enumerate(
             ("FRAUD_CONFIRMED", "LEGITIMATE", "INCONCLUSIVE")

@@ -33,6 +33,9 @@ from database.database import (
     create_transaction,
     freeze_account_for_fraud_case,
     get_account_status,
+    get_frozen_account_records,
+    get_customer_unfreeze_requests,
+    has_pending_customer_unfreeze_request,
     get_analytics_data,
     get_audit_logs,
     get_connection,
@@ -860,7 +863,63 @@ def momo_customer_session(authorization: str | None = Header(default=None)):
         ),
         "account_frozen": account_status["frozen"],
         "account_frozen_reason": account_status["reason"],
+        "unfreeze_request_pending": has_pending_customer_unfreeze_request(phone),
         "sandbox_only": True,
+    }
+
+
+@app.post("/api/momo/customer/unfreeze-request")
+def momo_customer_request_unfreeze(
+    body: dict = Body(...),
+    authorization: str | None = Header(default=None),
+):
+    subscriber = _require_sandbox_customer(authorization)
+    phone = str(subscriber.get("phone_number") or "")
+    account_status = get_account_status(phone)
+    if not account_status["frozen"]:
+        raise HTTPException(
+            status_code=409,
+            detail="This wallet is not frozen, so no unfreeze request is needed.",
+        )
+
+    message = str(body.get("message") or "").strip()
+    if not message:
+        raise HTTPException(
+            status_code=400,
+            detail="Please explain why you are requesting an unfreeze review.",
+        )
+    if len(message) > 1000:
+        raise HTTPException(
+            status_code=400,
+            detail="The unfreeze request message must be 1000 characters or fewer.",
+        )
+
+    if not has_pending_customer_unfreeze_request(phone):
+        create_audit_log(
+            None,
+            "CUSTOMER_UNFREEZE_REQUESTED",
+            phone,
+            json.dumps(
+                {
+                    "customer_ref": phone,
+                    "freeze_reason": account_status["reason"],
+                    "message": message,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+        events.publish(
+            "audit",
+            {"reason": "customer unfreeze requested", "customer_ref": phone},
+        )
+
+    return {
+        "status": "PENDING",
+        "message": (
+            "Your request has been sent to the Admin team. "
+            "The wallet stays frozen until an administrator reviews it."
+        ),
     }
 
 
@@ -2347,6 +2406,22 @@ def get_admin_demo_accounts():
             "reason": account_status["reason"],
         }
 
+    for frozen_account in get_frozen_account_records():
+        customer_ref = frozen_account["customer_ref"]
+        if customer_ref in accounts_by_ref:
+            continue
+        profile = get_sandbox_customer_profile(customer_ref)
+        accounts_by_ref[customer_ref] = {
+            "customer_ref": customer_ref,
+            "name": (
+                profile.get("full_name")
+                if profile
+                else "Frozen wallet"
+            ),
+            "account_frozen": True,
+            "reason": frozen_account["reason"],
+        }
+
     return list(accounts_by_ref.values())
 
 
@@ -2439,6 +2514,39 @@ def unfreeze_demo_account(
         logger.exception("Admin demo account unfreeze failed")
         raise HTTPException(
             status_code=500, detail="Unable to unfreeze demo wallet."
+        ) from error
+
+
+@app.get(
+    "/api/admin/account-unfreeze-requests",
+    dependencies=[Depends(require_admin)],
+)
+def admin_account_unfreeze_requests():
+    try:
+        requests = []
+        for request in get_customer_unfreeze_requests():
+            try:
+                details = json.loads(request["details"] or "{}")
+            except json.JSONDecodeError:
+                details = {}
+            requests.append(
+                {
+                    "id": request["id"],
+                    "customer_ref": request["customer_ref"],
+                    "message": details.get("message", ""),
+                    "freeze_reason": details.get("freeze_reason"),
+                    "current_freeze_reason": request["current_freeze_reason"],
+                    "account_frozen": bool(request["account_frozen"]),
+                    "pending": bool(request["pending"]),
+                    "created_at": request["timestamp"],
+                }
+            )
+        return {"requests": requests}
+    except Exception as error:
+        logger.exception("Unable to retrieve customer unfreeze requests")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to retrieve customer unfreeze requests.",
         ) from error
 
 

@@ -738,6 +738,17 @@ td small {
   background: #14532d;
 }
 
+.unfreeze-requests-panel {
+  margin-top: 24px;
+}
+
+.unfreeze-request-message {
+  min-width: 220px;
+  max-width: 420px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .account-list-unfreeze {
   width: auto;
   min-width: 132px;

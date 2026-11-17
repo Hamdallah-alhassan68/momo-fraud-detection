@@ -3092,6 +3092,82 @@ def get_account_status(customer_ref):
         connection.close()
 
 
+def get_frozen_account_records():
+    """Return all currently frozen wallet references, including sandbox profiles."""
+    connection = get_connection()
+    try:
+        rows = connection.execute(
+            """
+            SELECT customer_ref, reason, frozen_at
+            FROM account_status
+            WHERE frozen = 1
+            ORDER BY frozen_at DESC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def has_pending_customer_unfreeze_request(customer_ref):
+    """Check whether a frozen wallet has an unresolved customer request."""
+    connection = get_connection()
+    try:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM audit_logs AS request
+            JOIN account_status AS status
+                ON status.customer_ref = request.performed_by
+            WHERE request.action = ?
+                AND request.performed_by = ?
+                AND status.frozen = 1
+                AND request.timestamp >= status.frozen_at
+            LIMIT 1
+            """,
+            ("CUSTOMER_UNFREEZE_REQUESTED", customer_ref),
+        ).fetchone()
+        return row is not None
+    finally:
+        connection.close()
+
+
+def get_customer_unfreeze_requests(limit=50):
+    """Return recent in-app unfreeze requests with their current wallet state."""
+    connection = get_connection()
+    try:
+        rows = connection.execute(
+            """
+            SELECT
+                request.id,
+                request.performed_by AS customer_ref,
+                request.details,
+                request.timestamp,
+                COALESCE(status.frozen, 0) AS account_frozen,
+                status.reason AS current_freeze_reason,
+                CASE
+                    WHEN COALESCE(status.frozen, 0) = 1
+                        AND (
+                            status.frozen_at IS NULL
+                            OR request.timestamp >= status.frozen_at
+                        )
+                    THEN 1
+                    ELSE 0
+                END AS pending
+            FROM audit_logs AS request
+            LEFT JOIN account_status AS status
+                ON status.customer_ref = request.performed_by
+            WHERE request.action = ?
+            ORDER BY request.id DESC
+            LIMIT ?
+            """,
+            ("CUSTOMER_UNFREEZE_REQUESTED", limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
 def set_account_frozen(customer_ref, reason):
     """Freeze an account at the customer's request (persistent)."""
     connection = get_connection()

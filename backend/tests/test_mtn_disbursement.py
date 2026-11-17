@@ -1145,6 +1145,108 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
             self.assertEqual(resumed.status_code, 200, resumed.text)
             self.assertEqual(resumed.json()["status"], "APPROVED")
 
+    def test_customer_unfreeze_request_is_visible_until_admin_unfreezes(self):
+        admin_token = "customer-review-test-token-123456"
+        with patch.dict(
+            os.environ,
+            {
+                "MTN_DISBURSEMENT_ENVIRONMENT": "sandbox",
+                "MOMO_ADMIN_TOKEN": admin_token,
+            },
+            clear=False,
+        ):
+            created = self.client.post(
+                "/api/momo/customer/register",
+                json={
+                    "phone_number": self.phone,
+                    "full_name": "Fictional Test Customer",
+                    "id_type": "PASSPORT",
+                    "id_number": "TEST-ID-84521",
+                    "email": "controlled-test@example.test",
+                    "pin": "4826",
+                    "device_id": "browser-device-1",
+                    "privacy_notice_accepted": True,
+                },
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            customer_headers = {
+                "Authorization": f"Bearer {created.json()['token']}"
+            }
+            database.set_account_frozen(self.phone, "ADMIN_MANUAL")
+
+            missing_message = self.client.post(
+                "/api/momo/customer/unfreeze-request",
+                headers=customer_headers,
+                json={"message": "  "},
+            )
+            self.assertEqual(missing_message.status_code, 400)
+
+            submitted = self.client.post(
+                "/api/momo/customer/unfreeze-request",
+                headers=customer_headers,
+                json={"message": "Please review why this wallet was frozen."},
+            )
+            self.assertEqual(submitted.status_code, 200, submitted.text)
+            self.assertEqual(submitted.json()["status"], "PENDING")
+
+            customer_status = self.client.get(
+                "/api/momo/customer/me",
+                headers=customer_headers,
+            )
+            self.assertTrue(customer_status.json()["unfreeze_request_pending"])
+
+            admin_headers = {"X-Admin-Token": admin_token}
+            requests = self.client.get(
+                "/api/admin/account-unfreeze-requests",
+                headers=admin_headers,
+            )
+            self.assertEqual(requests.status_code, 200, requests.text)
+            request = next(
+                item
+                for item in requests.json()["requests"]
+                if item["customer_ref"] == self.phone
+            )
+            self.assertEqual(request["message"], "Please review why this wallet was frozen.")
+            self.assertEqual(request["freeze_reason"], "ADMIN_MANUAL")
+            self.assertTrue(request["pending"])
+
+            accounts = self.client.get(
+                "/api/admin/accounts",
+                headers=admin_headers,
+            )
+            self.assertEqual(accounts.status_code, 200, accounts.text)
+            frozen_account = next(
+                item
+                for item in accounts.json()["accounts"]
+                if item["customer_ref"] == self.phone
+            )
+            self.assertTrue(frozen_account["account_frozen"])
+            self.assertEqual(frozen_account["reason"], "ADMIN_MANUAL")
+
+            unfrozen = self.client.post(
+                f"/api/admin/accounts/{self.phone}/unfreeze",
+                headers=admin_headers,
+            )
+            self.assertEqual(unfrozen.status_code, 200, unfrozen.text)
+
+            requests_after_unfreeze = self.client.get(
+                "/api/admin/account-unfreeze-requests",
+                headers=admin_headers,
+            )
+            request_after_unfreeze = next(
+                item
+                for item in requests_after_unfreeze.json()["requests"]
+                if item["customer_ref"] == self.phone
+            )
+            self.assertFalse(request_after_unfreeze["pending"])
+
+            updated_customer_status = self.client.get(
+                "/api/momo/customer/me",
+                headers=customer_headers,
+            )
+            self.assertFalse(updated_customer_status.json()["unfreeze_request_pending"])
+            self.assertFalse(updated_customer_status.json()["account_frozen"])
+
     def test_simulation_only_wallet_transfer_never_contacts_mtn(self):
         assessment = {
             "risk_score": 0.1,

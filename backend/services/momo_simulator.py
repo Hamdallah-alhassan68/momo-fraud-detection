@@ -814,11 +814,26 @@ def verify_transaction(
         freeze_reason = account_status.get("reason")
         if freeze_reason == "FROZEN_BY_CUSTOMER":
             freeze_reason = "Security freeze requested by the wallet owner"
+            unfreeze_guidance = (
+                "Unfreeze it from the security controls with your PIN."
+            )
+        elif freeze_reason == "ADMIN_MANUAL":
+            freeze_reason = "Manual administrator freeze"
+            unfreeze_guidance = (
+                "Submit a request for review from the wallet security controls."
+            )
         elif not freeze_reason:
             freeze_reason = "Reason not recorded"
+            unfreeze_guidance = (
+                "Contact an administrator to review and clear this freeze."
+            )
+        else:
+            unfreeze_guidance = (
+                "Contact an administrator to review and clear this freeze."
+            )
         raise ValueError(
             f"Your wallet is frozen. Reason: {freeze_reason}. "
-            "Unfreeze it from the security controls before sending money."
+            f"{unfreeze_guidance}"
         )
 
     transaction_type = session["transaction_type"]

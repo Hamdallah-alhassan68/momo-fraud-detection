@@ -194,6 +194,8 @@ export default function MTNDisbursement() {
   const [walletFrozen, setWalletFrozen] = useState(false);
   const [freezeMessage, setFreezeMessage] = useState("");
   const [securityPin, setSecurityPin] = useState("");
+  const [unfreezeRequestPending, setUnfreezeRequestPending] = useState(false);
+  const [unfreezeRequestNote, setUnfreezeRequestNote] = useState("");
 
   // Statements History
   const [recentTransactions, setRecentTransactions] = useState([
@@ -373,6 +375,7 @@ export default function MTNDisbursement() {
         setCustomerAccount(data);
         setSenderNumber(data.phone_number);
         setWalletFrozen(Boolean(data.account_frozen));
+        setUnfreezeRequestPending(Boolean(data.unfreeze_request_pending));
         setFreezeMessage("");
       })
       .catch(() => {
@@ -383,6 +386,8 @@ export default function MTNDisbursement() {
         setWalletFrozen(false);
         setFreezeMessage("");
         setSecurityPin("");
+        setUnfreezeRequestPending(false);
+        setUnfreezeRequestNote("");
       });
   }, [customerToken, detectClientTelemetry, loadGatewayConfig]);
 
@@ -473,6 +478,8 @@ export default function MTNDisbursement() {
     setWalletFrozen(false);
     setFreezeMessage("");
     setSecurityPin("");
+    setUnfreezeRequestPending(false);
+    setUnfreezeRequestNote("");
     setSession(null);
     setStep("form");
     setPrivacyNoticeAccepted(false);
@@ -507,6 +514,11 @@ export default function MTNDisbursement() {
       setCustomerToken("");
       setCustomerAccount(null);
       setSenderNumber("");
+      setWalletFrozen(false);
+      setFreezeMessage("");
+      setSecurityPin("");
+      setUnfreezeRequestPending(false);
+      setUnfreezeRequestNote("");
       setSession(null);
       setStep("form");
       setShareCoarseLocation(false);
@@ -877,6 +889,44 @@ export default function MTNDisbursement() {
     }
   }
 
+  async function handleUnfreezeRequest() {
+    const message = unfreezeRequestNote.trim();
+    if (!message) {
+      setError("Explain why you are asking the Admin to review this freeze.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `${API_URL}/api/momo/customer/unfreeze-request`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${customerToken}`,
+          },
+          body: JSON.stringify({ message }),
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Could not send your request to the Admin.",
+        );
+      }
+
+      setUnfreezeRequestPending(true);
+      setFreezeMessage(data.message);
+      setUnfreezeRequestNote("");
+    } catch (requestError) {
+      setError(requestError.message || "Could not send your request to the Admin.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function handleReset() {
     setStep("form");
     setSession(null);
@@ -1033,6 +1083,9 @@ export default function MTNDisbursement() {
                       {customerAccount?.account_frozen_reason ===
                       "FROZEN_BY_CUSTOMER"
                         ? "Security freeze requested by the wallet owner"
+                        : customerAccount?.account_frozen_reason ===
+                            "ADMIN_MANUAL"
+                          ? "Manual administrator freeze"
                         : customerAccount?.account_frozen_reason ||
                           "not recorded"}
                     </p>
@@ -1049,6 +1102,23 @@ export default function MTNDisbursement() {
                         }}
                       >
                         Unfreeze wallet
+                      </button>
+                    )}
+                    {customerAccount?.account_frozen_reason !==
+                      "FROZEN_BY_CUSTOMER" && (
+                      <button
+                        type="button"
+                        className="text-button"
+                        disabled={unfreezeRequestPending}
+                        onClick={() => {
+                          setError("");
+                          setUnfreezeRequestNote("");
+                          setActiveModal("freeze");
+                        }}
+                      >
+                        {unfreezeRequestPending
+                          ? "Admin review requested"
+                          : "Request admin review"}
                       </button>
                     )}
                   </div>
@@ -2089,6 +2159,9 @@ export default function MTNDisbursement() {
                       {customerAccount?.account_frozen_reason ===
                       "FROZEN_BY_CUSTOMER"
                         ? "Security freeze requested by the wallet owner"
+                        : customerAccount?.account_frozen_reason ===
+                            "ADMIN_MANUAL"
+                          ? "Manual administrator freeze"
                         : customerAccount?.account_frozen_reason ||
                           "not recorded"}
                       .
@@ -2097,7 +2170,7 @@ export default function MTNDisbursement() {
                       {customerAccount?.account_frozen_reason ===
                       "FROZEN_BY_CUSTOMER"
                         ? "Confirm with your wallet PIN to restore sending."
-                        : "This freeze was applied by support. Contact support to restore sending."}
+                        : "Only an administrator can clear this freeze. You can send a request for review here."}
                     </p>
                   </div>
                 </div>
@@ -2167,6 +2240,48 @@ export default function MTNDisbursement() {
                   </button>
                 </>
               )}
+
+              {walletFrozen &&
+                customerAccount?.account_frozen_reason !==
+                  "FROZEN_BY_CUSTOMER" && (
+                  unfreezeRequestPending ? (
+                    <div className="form-success-alert" role="status">
+                      <CheckIcon />
+                      <span>
+                        Your request is pending. An Admin can review it from
+                        Overview → Customer unfreeze requests.
+                      </span>
+                    </div>
+                  ) : (
+                    <>
+                      <label
+                        className="field-label"
+                        htmlFor="unfreeze-request-note"
+                      >
+                        Message to Admin
+                      </label>
+                      <textarea
+                        id="unfreeze-request-note"
+                        className="standard-input"
+                        rows={4}
+                        maxLength={1000}
+                        value={unfreezeRequestNote}
+                        onChange={(event) =>
+                          setUnfreezeRequestNote(event.target.value)
+                        }
+                        placeholder="Explain why you believe this freeze should be reviewed."
+                      />
+                      <button
+                        type="button"
+                        className="freeze-action-btn"
+                        disabled={loading}
+                        onClick={handleUnfreezeRequest}
+                      >
+                        {loading ? "Sending request..." : "Request unfreeze review"}
+                      </button>
+                    </>
+                  )
+                )}
             </div>
           </div>
         </div>
