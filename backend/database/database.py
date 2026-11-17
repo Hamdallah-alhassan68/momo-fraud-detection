@@ -60,6 +60,9 @@ class _PostgresCursor:
             self._cursor.execute(query, params)
         return self
 
+    def __iter__(self):
+        return iter(self._cursor)
+
     def __getattr__(self, name):
         return getattr(self._cursor, name)
 

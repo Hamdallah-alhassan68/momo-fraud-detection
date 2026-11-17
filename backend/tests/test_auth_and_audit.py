@@ -17,6 +17,21 @@ from services import auth
 
 
 class PostgresDatabaseCompatibilityTests(unittest.TestCase):
+    def test_postgres_cursor_supports_iteration(self):
+        class IterableCursor:
+            def execute(self, _query):
+                return self
+
+            def __iter__(self):
+                return iter(({"column_name": "samples_count"},))
+
+        cursor = database._PostgresCursor(IterableCursor())
+
+        self.assertEqual(
+            list(cursor.execute("SELECT column_name FROM columns")),
+            [{"column_name": "samples_count"}],
+        )
+
     def test_postgres_sql_uses_identity_columns_and_driver_placeholders(self):
         query = database._postgres_sql(
             "CREATE TABLE sample (id INTEGER PRIMARY KEY AUTOINCREMENT, "
