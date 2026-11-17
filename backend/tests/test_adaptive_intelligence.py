@@ -598,6 +598,26 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
             momo_simulator.BALANCES.clear()
             momo_simulator.BALANCES.update(original_balances)
 
+    def test_frozen_wallet_requires_pin_before_showing_freeze_reason(self):
+        from services import momo_simulator
+
+        database.set_account_frozen("WALLET-1001", "FROZEN_BY_CUSTOMER")
+        session = momo_simulator.initiate_transaction(
+            customer_ref="WALLET-1001",
+            transaction_type="TRANSFER",
+            amount=25,
+            recipient="WALLET-2001",
+        )
+
+        with self.assertRaisesRegex(ValueError, "Incorrect PIN/OTP"):
+            momo_simulator.verify_transaction(session["session_id"], "0000")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Reason: Security freeze requested by the wallet owner",
+        ):
+            momo_simulator.verify_transaction(session["session_id"], "2233")
+
     def test_resolved_analyst_outcomes_are_returned_as_a_daily_trend(self):
         for index, decision in enumerate(
             ("FRAUD_CONFIRMED", "LEGITIMATE", "INCONCLUSIVE")

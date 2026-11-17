@@ -836,6 +836,7 @@ def momo_customer_session(authorization: str | None = Header(default=None)):
     subscriber = _require_sandbox_customer(authorization)
     phone = str(subscriber.get("phone_number") or "")
     email = str(subscriber.get("email") or "")
+    account_status = get_account_status(phone)
     local, separator, domain = email.partition("@")
     masked_email = (
         f"{local[:1]}***@{domain}"
@@ -857,6 +858,8 @@ def momo_customer_session(authorization: str | None = Header(default=None)):
         "security_code_setup_available": bool(
             get_sandbox_customer_profile(phone)
         ),
+        "account_frozen": account_status["frozen"],
+        "account_frozen_reason": account_status["reason"],
         "sandbox_only": True,
     }
 

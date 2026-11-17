@@ -1029,6 +1029,122 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
             connection.close()
         self.assertEqual(enrollment_consent["location_consent"], 0)
 
+    def test_frozen_wallet_can_authenticate_before_reason_and_unfreeze(self):
+        registration = {
+            "phone_number": self.phone,
+            "full_name": "Fictional Test Customer",
+            "id_type": "PASSPORT",
+            "id_number": "TEST-ID-84521",
+            "email": "controlled-test@example.test",
+            "pin": "4826",
+            "device_id": "browser-device-1",
+            "privacy_notice_accepted": True,
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "MTN_DISBURSEMENT_ENVIRONMENT": "sandbox",
+                "MOMO_SIMULATION_ONLY": "true",
+            },
+            clear=False,
+        ):
+            created = self.client.post(
+                "/api/momo/customer/register",
+                json=registration,
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            headers = {"Authorization": f"Bearer {created.json()['token']}"}
+            freeze = self.client.post(
+                "/api/momo/account/freeze",
+                json={"customer_ref": self.phone, "code": "4826"},
+            )
+            self.assertEqual(freeze.status_code, 200, freeze.text)
+
+            account = self.client.get(
+                "/api/momo/customer/me",
+                headers=headers,
+            )
+            self.assertTrue(account.json()["account_frozen"])
+            self.assertEqual(
+                account.json()["account_frozen_reason"],
+                "FROZEN_BY_CUSTOMER",
+            )
+
+            started = self.client.post(
+                "/api/momo/transaction/initiate",
+                headers=headers,
+                json={
+                    "transaction_type": "TRANSFER",
+                    "amount": 1,
+                    "recipient": "0242002002",
+                    "device_id": "browser-device-1",
+                    "live_mtn": False,
+                },
+            )
+            self.assertEqual(started.status_code, 200, started.text)
+
+            wrong_pin = self.client.post(
+                "/api/momo/transaction/verify",
+                headers=headers,
+                json={
+                    "session_id": started.json()["session_id"],
+                    "code": "0000",
+                },
+            )
+            self.assertEqual(wrong_pin.status_code, 400)
+            self.assertIn("Incorrect PIN", wrong_pin.json()["detail"])
+
+            frozen = self.client.post(
+                "/api/momo/transaction/verify",
+                headers=headers,
+                json={
+                    "session_id": started.json()["session_id"],
+                    "code": "4826",
+                },
+            )
+            self.assertEqual(frozen.status_code, 400)
+            self.assertIn(
+                "Security freeze requested by the wallet owner",
+                frozen.json()["detail"],
+            )
+
+            wrong_unfreeze_pin = self.client.post(
+                "/api/momo/account/unfreeze",
+                json={"customer_ref": self.phone, "code": "0000"},
+            )
+            self.assertEqual(wrong_unfreeze_pin.status_code, 400)
+            self.assertTrue(database.get_account_status(self.phone)["frozen"])
+
+            unfrozen = self.client.post(
+                "/api/momo/account/unfreeze",
+                json={"customer_ref": self.phone, "code": "4826"},
+            )
+            self.assertEqual(unfrozen.status_code, 200, unfrozen.text)
+
+            assessment = {
+                "risk_score": 0.1,
+                "risk_level": "LOW",
+                "decision": "APPROVE",
+                "isolation_forest_score": 0.1,
+                "rule_score": 0,
+                "reasons": [],
+            }
+            with patch.object(
+                self.momo_simulator.fraud_detector,
+                "assess_transaction",
+                return_value=assessment,
+            ):
+                resumed = self.client.post(
+                    "/api/momo/transaction/verify",
+                    headers=headers,
+                    json={
+                        "session_id": started.json()["session_id"],
+                        "code": "4826",
+                    },
+                )
+            self.assertEqual(resumed.status_code, 200, resumed.text)
+            self.assertEqual(resumed.json()["status"], "APPROVED")
+
     def test_simulation_only_wallet_transfer_never_contacts_mtn(self):
         assessment = {
             "risk_score": 0.1,

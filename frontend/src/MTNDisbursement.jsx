@@ -193,6 +193,7 @@ export default function MTNDisbursement() {
   // Emergency Freeze State
   const [walletFrozen, setWalletFrozen] = useState(false);
   const [freezeMessage, setFreezeMessage] = useState("");
+  const [securityPin, setSecurityPin] = useState("");
 
   // Statements History
   const [recentTransactions, setRecentTransactions] = useState([
@@ -371,12 +372,17 @@ export default function MTNDisbursement() {
         if (!response.ok) throw new Error(data.detail || "Sandbox session expired.");
         setCustomerAccount(data);
         setSenderNumber(data.phone_number);
+        setWalletFrozen(Boolean(data.account_frozen));
+        setFreezeMessage("");
       })
       .catch(() => {
         sessionStorage.removeItem("momo-sandbox-customer-token");
         setCustomerToken("");
         setCustomerAccount(null);
         setSenderNumber("");
+        setWalletFrozen(false);
+        setFreezeMessage("");
+        setSecurityPin("");
       });
   }, [customerToken, detectClientTelemetry, loadGatewayConfig]);
 
@@ -464,6 +470,9 @@ export default function MTNDisbursement() {
     setCustomerToken("");
     setCustomerAccount(null);
     setSenderNumber("");
+    setWalletFrozen(false);
+    setFreezeMessage("");
+    setSecurityPin("");
     setSession(null);
     setStep("form");
     setPrivacyNoticeAccepted(false);
@@ -793,29 +802,76 @@ export default function MTNDisbursement() {
 
   // Emergency Freeze Handler
   async function handleEmergencyFreeze() {
-    if (!window.confirm("Confirm emergency account freeze? This will block all incoming and outgoing transactions immediately.")) {
+    if (!/^\d{4}$/.test(securityPin)) {
+      setError("Enter your 4-digit wallet PIN to freeze this wallet.");
       return;
     }
 
     setLoading(true);
+    setError("");
     try {
       const res = await fetch(`${API_URL}/api/momo/account/freeze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           customer_ref: senderNumber,
-          code: "2233",
+          code: securityPin,
         }),
       });
       const data = await res.json();
       if (res.ok) {
         setWalletFrozen(true);
-        setFreezeMessage(data.message || "Your MoMo wallet has been locked. Contact security operations.");
+        setCustomerAccount((current) => ({
+          ...current,
+          account_frozen: true,
+          account_frozen_reason: "FROZEN_BY_CUSTOMER",
+        }));
+        setFreezeMessage(data.message || "Your wallet is frozen. Enter your PIN to unfreeze it.");
+        setSecurityPin("");
+        setActiveModal(null);
       } else {
         setError(data.detail || "Unable to execute emergency freeze.");
       }
     } catch (err) {
       setError(err.message || "Network error while locking account.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleEmergencyUnfreeze() {
+    if (!/^\d{4}$/.test(securityPin)) {
+      setError("Enter your 4-digit wallet PIN to unfreeze this wallet.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(`${API_URL}/api/momo/account/unfreeze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customer_ref: senderNumber,
+          code: securityPin,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || "Unable to unfreeze account.");
+      }
+
+      setWalletFrozen(false);
+      setCustomerAccount((current) => ({
+        ...current,
+        account_frozen: false,
+        account_frozen_reason: null,
+      }));
+      setFreezeMessage(data.message || "Your wallet is active again.");
+      setSecurityPin("");
+      setActiveModal(null);
+    } catch (unfreezeError) {
+      setError(unfreezeError.message || "Unable to unfreeze account.");
     } finally {
       setLoading(false);
     }
@@ -972,7 +1028,29 @@ export default function MTNDisbursement() {
                   <LockIcon />
                   <div>
                     <strong>Wallet Frozen</strong>
-                    <p>{freezeMessage}</p>
+                    <p>
+                      Reason:{" "}
+                      {customerAccount?.account_frozen_reason ===
+                      "FROZEN_BY_CUSTOMER"
+                        ? "Security freeze requested by the wallet owner"
+                        : customerAccount?.account_frozen_reason ||
+                          "not recorded"}
+                    </p>
+                    {freezeMessage && <p>{freezeMessage}</p>}
+                    {customerAccount?.account_frozen_reason ===
+                      "FROZEN_BY_CUSTOMER" && (
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => {
+                          setError("");
+                          setSecurityPin("");
+                          setActiveModal("freeze");
+                        }}
+                      >
+                        Unfreeze wallet
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -999,7 +1077,11 @@ export default function MTNDisbursement() {
                 <button
                   type="button"
                   className="service-row-btn"
-                  onClick={() => setActiveModal("freeze")}
+                  onClick={() => {
+                    setError("");
+                    setSecurityPin("");
+                    setActiveModal("freeze");
+                  }}
                 >
                   <div className="service-row-left">
                     <div className="service-icon-wrapper icon-danger">
@@ -1971,33 +2053,66 @@ export default function MTNDisbursement() {
       {/* MODAL 3: EMERGENCY FREEZE WALLET                          */}
       {/* ========================================================= */}
       {activeModal === "freeze" && (
-        <div className="modal-backdrop" onClick={() => setActiveModal(null)}>
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            setActiveModal(null);
+            setSecurityPin("");
+          }}
+        >
           <div className="modal-sheet-panel" onClick={(e) => e.stopPropagation()}>
             <div className="panel-header">
               <div className="panel-header-titles">
                 <span className="network-tag tag-danger">Security Operations</span>
-                <h3>Emergency Account Lock</h3>
+                <h3>{walletFrozen ? "Wallet Security Status" : "Emergency Account Lock"}</h3>
               </div>
               <button
                 type="button"
                 className="close-panel-btn"
-                onClick={() => setActiveModal(null)}
+                onClick={() => {
+                  setActiveModal(null);
+                  setSecurityPin("");
+                }}
               >
                 <CrossIcon />
               </button>
             </div>
 
             <div className="freeze-dialog-content">
-              <div className="freeze-alert-box">
-                <AlertIcon />
-                <div>
-                  <strong>Suspected Fraud or Stolen SIM?</strong>
-                  <p>
-                    Activating an emergency freeze immediately halts all transfers from this number
-                    and triggers an incident review in the Security Operations Center.
-                  </p>
+              {walletFrozen ? (
+                <div className="freeze-alert-box">
+                  <AlertIcon />
+                  <div>
+                    <strong>Wallet frozen</strong>
+                    <p>
+                      Reason:{" "}
+                      {customerAccount?.account_frozen_reason ===
+                      "FROZEN_BY_CUSTOMER"
+                        ? "Security freeze requested by the wallet owner"
+                        : customerAccount?.account_frozen_reason ||
+                          "not recorded"}
+                      .
+                    </p>
+                    <p>
+                      {customerAccount?.account_frozen_reason ===
+                      "FROZEN_BY_CUSTOMER"
+                        ? "Confirm with your wallet PIN to restore sending."
+                        : "This freeze was applied by support. Contact support to restore sending."}
+                    </p>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="freeze-alert-box">
+                  <AlertIcon />
+                  <div>
+                    <strong>Suspected Fraud or Stolen SIM?</strong>
+                    <p>
+                      Freezing your wallet stops transfers until you confirm
+                      your PIN to unfreeze it.
+                    </p>
+                  </div>
+                </div>
+              )}
 
               {freezeMessage && (
                 <div className="form-success-alert">
@@ -2006,14 +2121,52 @@ export default function MTNDisbursement() {
                 </div>
               )}
 
-              <button
-                type="button"
-                className="freeze-action-btn"
-                disabled={loading || walletFrozen}
-                onClick={handleEmergencyFreeze}
-              >
-                {loading ? "Locking..." : walletFrozen ? "Wallet Is Locked" : "Lock My MoMo Wallet Immediately"}
-              </button>
+              {error && (
+                <div className="form-error-alert">
+                  <AlertIcon />
+                  <span>{error}</span>
+                </div>
+              )}
+
+              {(!walletFrozen ||
+                customerAccount?.account_frozen_reason ===
+                  "FROZEN_BY_CUSTOMER") && (
+                <>
+                  <label className="field-label" htmlFor="security-wallet-pin">
+                    Confirm with your 4-digit wallet PIN
+                  </label>
+                  <input
+                    id="security-wallet-pin"
+                    className="standard-input"
+                    type="password"
+                    inputMode="numeric"
+                    autoComplete="current-password"
+                    maxLength={4}
+                    value={securityPin}
+                    onChange={(event) =>
+                      setSecurityPin(event.target.value.replace(/\D/g, ""))
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="freeze-action-btn"
+                    disabled={loading}
+                    onClick={
+                      walletFrozen
+                        ? handleEmergencyUnfreeze
+                        : handleEmergencyFreeze
+                    }
+                  >
+                    {loading
+                      ? walletFrozen
+                        ? "Unfreezing..."
+                        : "Freezing..."
+                      : walletFrozen
+                        ? "Unfreeze wallet"
+                        : "Freeze wallet"}
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

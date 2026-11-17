@@ -443,12 +443,6 @@ def initiate_transaction(
     customer = _ensure_customer(customer_ref)
     customer_ref = customer["ref"]
 
-    if get_account_status(customer_ref).get("frozen"):
-        raise ValueError(
-            "Your wallet is frozen. "
-            "Unfreeze it from the security menu before sending money."
-        )
-
     meta = TRANSACTION_TYPES.get(transaction_type)
     if meta is None:
         raise ValueError(
@@ -715,12 +709,6 @@ def verify_transaction(
     customer = _ensure_customer(session["customer_ref"])
     live_mtn = bool(session.get("live_mtn", 0))
 
-    if get_account_status(customer["ref"]).get("frozen"):
-        raise ValueError(
-            "Your wallet is frozen. "
-            "Unfreeze it from the security menu before sending money."
-        )
-
     if step_up:
         if session["status"] != "STEP_UP":
             raise ValueError(
@@ -820,6 +808,19 @@ def verify_transaction(
                         "Too many incorrect SMS codes. Start a new transaction."
                     )
             raise ValueError("Incorrect PIN/OTP. Please try again.")
+
+    account_status = get_account_status(customer["ref"])
+    if account_status.get("frozen"):
+        freeze_reason = account_status.get("reason")
+        if freeze_reason == "FROZEN_BY_CUSTOMER":
+            freeze_reason = "Security freeze requested by the wallet owner"
+        elif not freeze_reason:
+            freeze_reason = "Reason not recorded"
+        raise ValueError(
+            f"Your wallet is frozen. Reason: {freeze_reason}. "
+            "Unfreeze it from the security controls before sending money."
+        )
+
     transaction_type = session["transaction_type"]
     meta = TRANSACTION_TYPES.get(transaction_type, {})
     amount = float(session["amount"])
@@ -1506,10 +1507,19 @@ def check_mtn_transfer_status(session_id):
 def freeze_account(customer_ref, code):
     """Freeze the account at the customer's request (PIN confirmed)."""
     customer = next((c for c in CUSTOMERS if c["ref"] == customer_ref), None)
+    if customer is None and get_sandbox_customer_profile(customer_ref):
+        customer = _ensure_customer(customer_ref)
     if customer is None:
         raise ValueError("Unknown wallet account.")
 
-    if str(code).strip() != str(customer["pin"]):
+    pin_matches = (
+        verify_password(str(code).strip(), customer["pin_hash"])
+        if customer.get("pin_hash")
+        else hmac.compare_digest(
+            str(code).strip(), str(customer.get("pin") or "")
+        )
+    )
+    if not pin_matches:
         raise ValueError(
             "Incorrect PIN. Your account was NOT frozen."
         )
@@ -1539,11 +1549,28 @@ def freeze_account(customer_ref, code):
 def unfreeze_account(customer_ref, code):
     """Re-activate a customer-frozen account (PIN confirmed)."""
     customer = next((c for c in CUSTOMERS if c["ref"] == customer_ref), None)
+    if customer is None and get_sandbox_customer_profile(customer_ref):
+        customer = _ensure_customer(customer_ref)
     if customer is None:
         raise ValueError("Unknown wallet account.")
 
-    if str(code).strip() != str(customer["pin"]):
+    pin_matches = (
+        verify_password(str(code).strip(), customer["pin_hash"])
+        if customer.get("pin_hash")
+        else hmac.compare_digest(
+            str(code).strip(), str(customer.get("pin") or "")
+        )
+    )
+    if not pin_matches:
         raise ValueError("Incorrect PIN. Account remains frozen.")
+
+    account_status = get_account_status(customer_ref)
+    if account_status.get("frozen") and account_status.get(
+        "reason"
+    ) != "FROZEN_BY_CUSTOMER":
+        raise ValueError(
+            "This wallet freeze was applied by support. Contact support to unfreeze it."
+        )
 
     set_account_unfrozen(customer_ref)
 
