@@ -612,11 +612,26 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Incorrect PIN/OTP"):
             momo_simulator.verify_transaction(session["session_id"], "0000")
 
-        with self.assertRaisesRegex(
-            ValueError,
-            "Reason: Security freeze requested by the wallet owner",
+        assessment = {
+            "risk_score": 0.1,
+            "risk_level": "LOW",
+            "decision": "APPROVE",
+            "isolation_forest_score": 0.1,
+            "rule_score": 0,
+            "reasons": [],
+        }
+        with patch.object(
+            momo_simulator.fraud_detector,
+            "assess_transaction",
+            return_value=assessment,
         ):
-            momo_simulator.verify_transaction(session["session_id"], "2233")
+            blocked = momo_simulator.verify_transaction(
+                session["session_id"], "2233"
+            )
+        self.assertEqual(blocked["status"], "BLOCKED")
+        self.assertEqual(blocked["account_frozen_reason"], "FROZEN_BY_CUSTOMER")
+        self.assertEqual(blocked["risk_level"], "LOW")
+        self.assertFalse(blocked["case_created"])
 
     def test_admin_freeze_reports_admin_unfreeze_path_after_pin(self):
         from services import momo_simulator
@@ -632,11 +647,26 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Incorrect PIN/OTP"):
             momo_simulator.verify_transaction(session["session_id"], "0000")
 
-        with self.assertRaisesRegex(
-            ValueError,
-            "Manual administrator freeze.*request for review",
+        assessment = {
+            "risk_score": 0.1,
+            "risk_level": "LOW",
+            "decision": "APPROVE",
+            "isolation_forest_score": 0.1,
+            "rule_score": 0,
+            "reasons": [],
+        }
+        with patch.object(
+            momo_simulator.fraud_detector,
+            "assess_transaction",
+            return_value=assessment,
         ):
-            momo_simulator.verify_transaction(session["session_id"], "2233")
+            blocked = momo_simulator.verify_transaction(
+                session["session_id"], "2233"
+            )
+        self.assertEqual(blocked["status"], "BLOCKED")
+        self.assertEqual(blocked["account_frozen_reason"], "ADMIN_MANUAL")
+        self.assertEqual(blocked["decision"], "BLOCKED_BY_ACCOUNT_FREEZE")
+        self.assertFalse(blocked["case_created"])
 
         with self.assertRaisesRegex(ValueError, "applied by support"):
             momo_simulator.unfreeze_account("WALLET-1001", "2233")

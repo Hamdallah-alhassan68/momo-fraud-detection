@@ -18,8 +18,14 @@ function getCaseStatusPresentation(status) {
 }
 
 function getFreezeReasonLabel(reason) {
-  if (reason === "ADMIN_MANUAL") return "Manual administrator freeze";
+  if (reason === "ADMIN_MANUAL") {
+    return "Manual administrator freeze (not a risk signal)";
+  }
   if (reason === "FROZEN_BY_CUSTOMER") return "Security freeze requested by customer";
+  const caseMatch = /^ADMIN_FRAUD_CASE_(\d+)$/.exec(reason || "");
+  if (caseMatch) {
+    return `Fraud-confirmed administrator freeze (case ${caseMatch[1]})`;
+  }
   return reason || "Not recorded";
 }
 
@@ -721,9 +727,7 @@ async function loadAlerts() {
               <td className="mono">{account.customer_ref}</td>
               <td>
                 {account.account_frozen
-                  ? account.reason === "FROZEN_BY_CUSTOMER"
-                    ? "Frozen by customer"
-                    : "Frozen by admin"
+                  ? getFreezeReasonLabel(account.reason)
                   : "Active"}
               </td>
               <td>

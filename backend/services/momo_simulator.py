@@ -809,33 +809,6 @@ def verify_transaction(
                     )
             raise ValueError("Incorrect PIN/OTP. Please try again.")
 
-    account_status = get_account_status(customer["ref"])
-    if account_status.get("frozen"):
-        freeze_reason = account_status.get("reason")
-        if freeze_reason == "FROZEN_BY_CUSTOMER":
-            freeze_reason = "Security freeze requested by the wallet owner"
-            unfreeze_guidance = (
-                "Unfreeze it from the security controls with your PIN."
-            )
-        elif freeze_reason == "ADMIN_MANUAL":
-            freeze_reason = "Manual administrator freeze"
-            unfreeze_guidance = (
-                "Submit a request for review from the wallet security controls."
-            )
-        elif not freeze_reason:
-            freeze_reason = "Reason not recorded"
-            unfreeze_guidance = (
-                "Contact an administrator to review and clear this freeze."
-            )
-        else:
-            unfreeze_guidance = (
-                "Contact an administrator to review and clear this freeze."
-            )
-        raise ValueError(
-            f"Your wallet is frozen. Reason: {freeze_reason}. "
-            f"{unfreeze_guidance}"
-        )
-
     transaction_type = session["transaction_type"]
     meta = TRANSACTION_TYPES.get(transaction_type, {})
     amount = float(session["amount"])
@@ -1072,6 +1045,53 @@ def verify_transaction(
     transaction["device_age_days"] = round(device_age_days, 3)
 
     transaction["live_mtn"] = live_mtn
+    account_status = get_account_status(customer["ref"])
+    if account_status.get("frozen"):
+        freeze_reason = account_status.get("reason") or "REASON_NOT_RECORDED"
+        _finalize(
+            "BLOCKED",
+            "TRANSACTION_BLOCKED_ACCOUNT_FROZEN",
+            transaction,
+            assessment,
+            ip_address,
+            device_id,
+            create_fraud_case_record=(risk_level == "HIGH"),
+            audit_context=f"Wallet freeze reason: {freeze_reason}",
+        )
+        update_momo_session_status(
+            session_id,
+            "BLOCKED",
+            risk_level=risk_level,
+            risk_score=assessment["risk_score"],
+            risk_signals=json.dumps(signals, sort_keys=True),
+            assessment_reasons=json.dumps(assessment["reasons"]),
+            otp_code=None,
+            otp_expires_at=None,
+            reason=f"Blocked by wallet freeze ({freeze_reason})",
+            transaction_reference=reference,
+        )
+        return {
+            "status": "BLOCKED",
+            "message": (
+                "This transfer was blocked because the wallet is frozen. "
+                "No money was moved. The attempted transaction and its risk "
+                "assessment were recorded for Admin review."
+            ),
+            "transaction_reference": reference,
+            "amount": amount,
+            "recipient": dest_ref,
+            "risk_score": assessment["risk_score"],
+            "risk_level": risk_level,
+            "decision": "BLOCKED_BY_ACCOUNT_FREEZE",
+            "risk_decision": assessment["decision"],
+            "reasons": assessment["reasons"],
+            "signals": signals,
+            "account_frozen_reason": freeze_reason,
+            "approved": False,
+            "case_created": risk_level == "HIGH",
+            "live_mtn": live_mtn,
+        }
+
     outcome = _resolve_outcome(
         session_id, risk_level, assessment, reference, transaction,
         signals, amount, dest_ref, origin_ref, origin_new, dest_new,
@@ -1245,7 +1265,17 @@ def _resolve_outcome(session_id, risk_level, assessment, reference, transaction,
     }
 
 
-def _finalize(status, audit_action, transaction, assessment, ip_address, device_id):
+def _finalize(
+    status,
+    audit_action,
+    transaction,
+    assessment,
+    ip_address,
+    device_id,
+    *,
+    create_fraud_case_record=True,
+    audit_context=None,
+):
     """Persist the assessed transaction and notify live dashboards."""
     transaction["status"] = status
     tx_id = create_transaction(transaction)
@@ -1260,8 +1290,10 @@ def _finalize(status, audit_action, transaction, assessment, ip_address, device_
         f"decision: {assessment['decision']}; "
         f"signal flags: {', '.join(signal_names) or 'none'}"
     )
+    if audit_context:
+        audit_details = f"{audit_details}; {audit_context}"
 
-    if status == "BLOCKED":
+    if status == "BLOCKED" and create_fraud_case_record:
         alert_id = create_fraud_alert(
             tx_id, assessment["risk_level"], assessment["reasons"]
         )
@@ -1273,7 +1305,12 @@ def _finalize(status, audit_action, transaction, assessment, ip_address, device_
         if alert_id:
             events.publish("alert", {"reason": "created", "alert_id": alert_id})
     else:
-        create_audit_log(tx_id, audit_action, "SYSTEM", audit_details)
+        create_audit_log(
+            tx_id,
+            audit_action,
+            "SYSTEM",
+            audit_details,
+        )
 
     events.publish("transaction", {"reason": "created", "transaction_id": tx_id})
     events.publish("stats", {"reason": "updated"})

@@ -124,6 +124,20 @@ function getBrowserDeviceId() {
   }
 }
 
+function getFreezeReasonLabel(reason) {
+  if (reason === "ADMIN_MANUAL") {
+    return "Manual administrator freeze (not a risk signal)";
+  }
+  if (reason === "FROZEN_BY_CUSTOMER") {
+    return "Security freeze requested by the wallet owner";
+  }
+  const caseMatch = /^ADMIN_FRAUD_CASE_(\d+)$/.exec(reason || "");
+  if (caseMatch) {
+    return `Fraud-confirmed administrator freeze (case ${caseMatch[1]})`;
+  }
+  return reason || "Not recorded";
+}
+
 export default function MTNDisbursement() {
   // Navigation tabs: 'momo' | 'home' | 'buy' | 'pulse' | 'more'
   const [activeTab, setActiveTab] = useState("momo");
@@ -1107,14 +1121,9 @@ export default function MTNDisbursement() {
                     <strong>Wallet Frozen</strong>
                     <p>
                       Reason:{" "}
-                      {customerAccount?.account_frozen_reason ===
-                      "FROZEN_BY_CUSTOMER"
-                        ? "Security freeze requested by the wallet owner"
-                        : customerAccount?.account_frozen_reason ===
-                            "ADMIN_MANUAL"
-                          ? "Manual administrator freeze"
-                        : customerAccount?.account_frozen_reason ||
-                          "not recorded"}
+                      {getFreezeReasonLabel(
+                        customerAccount?.account_frozen_reason,
+                      )}
                     </p>
                     {freezeMessage && <p>{freezeMessage}</p>}
                     {customerAccount?.account_frozen_reason ===
@@ -2081,8 +2090,28 @@ export default function MTNDisbursement() {
                     <div className="receipt-table">
                       <div className="receipt-data-row">
                         <span>Decision:</span>
-                        <strong className="text-danger">{receipt.decision || "BLOCKED"}</strong>
+                        <strong className="text-danger">
+                          {receipt.decision === "BLOCKED_BY_ACCOUNT_FREEZE"
+                            ? "Blocked by existing account freeze"
+                            : receipt.decision || "BLOCKED"}
+                        </strong>
                       </div>
+                      {receipt.risk_decision && (
+                        <div className="receipt-data-row">
+                          <span>Fraud engine decision:</span>
+                          <strong>{receipt.risk_decision}</strong>
+                        </div>
+                      )}
+                      {receipt.account_frozen_reason && (
+                        <div className="receipt-data-row">
+                          <span>Account freeze reason:</span>
+                          <strong>
+                            {getFreezeReasonLabel(
+                              receipt.account_frozen_reason,
+                            )}
+                          </strong>
+                        </div>
+                      )}
                       <div className="receipt-data-row">
                         <span>Risk Tier:</span>
                         <span
@@ -2216,14 +2245,9 @@ export default function MTNDisbursement() {
                     <strong>Wallet frozen</strong>
                     <p>
                       Reason:{" "}
-                      {customerAccount?.account_frozen_reason ===
-                      "FROZEN_BY_CUSTOMER"
-                        ? "Security freeze requested by the wallet owner"
-                        : customerAccount?.account_frozen_reason ===
-                            "ADMIN_MANUAL"
-                          ? "Manual administrator freeze"
-                        : customerAccount?.account_frozen_reason ||
-                          "not recorded"}
+                      {getFreezeReasonLabel(
+                        customerAccount?.account_frozen_reason,
+                      )}
                       .
                     </p>
                     <p>

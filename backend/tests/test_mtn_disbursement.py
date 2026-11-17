@@ -1094,18 +1094,48 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
             self.assertEqual(wrong_pin.status_code, 400)
             self.assertIn("Incorrect PIN", wrong_pin.json()["detail"])
 
-            frozen = self.client.post(
-                "/api/momo/transaction/verify",
-                headers=headers,
-                json={
-                    "session_id": started.json()["session_id"],
-                    "code": "4826",
-                },
+            assessment = {
+                "risk_score": 0.1,
+                "risk_level": "LOW",
+                "decision": "APPROVE",
+                "isolation_forest_score": 0.1,
+                "rule_score": 0,
+                "reasons": [],
+            }
+            with patch.object(
+                self.momo_simulator.fraud_detector,
+                "assess_transaction",
+                return_value=assessment,
+            ):
+                frozen = self.client.post(
+                    "/api/momo/transaction/verify",
+                    headers=headers,
+                    json={
+                        "session_id": started.json()["session_id"],
+                        "code": "4826",
+                    },
+                )
+            self.assertEqual(frozen.status_code, 200, frozen.text)
+            self.assertEqual(frozen.json()["status"], "BLOCKED")
+            self.assertEqual(frozen.json()["risk_level"], "LOW")
+            self.assertEqual(
+                frozen.json()["account_frozen_reason"],
+                "FROZEN_BY_CUSTOMER",
             )
-            self.assertEqual(frozen.status_code, 400)
-            self.assertIn(
-                "Security freeze requested by the wallet owner",
-                frozen.json()["detail"],
+            self.assertFalse(frozen.json()["case_created"])
+
+            recorded_attempt = next(
+                row
+                for row in database.get_recent_transactions_feed()
+                if row["transaction_reference"]
+                == frozen.json()["transaction_reference"]
+            )
+            self.assertEqual(recorded_attempt["status"], "BLOCKED")
+            self.assertEqual(recorded_attempt["risk_level"], "LOW")
+            self.assertEqual(recorded_attempt["reasons"], [])
+            self.assertEqual(
+                database.get_momo_session(started.json()["session_id"])["status"],
+                "BLOCKED",
             )
 
             wrong_unfreeze_pin = self.client.post(
@@ -1121,14 +1151,18 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
             )
             self.assertEqual(unfrozen.status_code, 200, unfrozen.text)
 
-            assessment = {
-                "risk_score": 0.1,
-                "risk_level": "LOW",
-                "decision": "APPROVE",
-                "isolation_forest_score": 0.1,
-                "rule_score": 0,
-                "reasons": [],
-            }
+            resumed_session = self.client.post(
+                "/api/momo/transaction/initiate",
+                headers=headers,
+                json={
+                    "transaction_type": "TRANSFER",
+                    "amount": 1,
+                    "recipient": "0242002002",
+                    "device_id": "browser-device-1",
+                    "live_mtn": False,
+                },
+            )
+            self.assertEqual(resumed_session.status_code, 200, resumed_session.text)
             with patch.object(
                 self.momo_simulator.fraud_detector,
                 "assess_transaction",
@@ -1138,12 +1172,132 @@ class SandboxCustomerEnrollmentTests(unittest.TestCase):
                     "/api/momo/transaction/verify",
                     headers=headers,
                     json={
-                        "session_id": started.json()["session_id"],
+                        "session_id": resumed_session.json()["session_id"],
                         "code": "4826",
                     },
                 )
             self.assertEqual(resumed.status_code, 200, resumed.text)
             self.assertEqual(resumed.json()["status"], "APPROVED")
+
+    def test_high_risk_attempt_on_frozen_wallet_is_recorded_for_admin_review(self):
+        admin_token = "frozen-risk-case-test-token-123456"
+        assessment = {
+            "risk_score": 0.95,
+            "risk_level": "HIGH",
+            "decision": "BLOCK",
+            "isolation_forest_score": 0.8,
+            "rule_score": 1.0,
+            "reasons": ["Recent SIM swap"],
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "MTN_DISBURSEMENT_ENVIRONMENT": "sandbox",
+                "MOMO_ADMIN_TOKEN": admin_token,
+            },
+            clear=False,
+        ):
+            created = self.client.post(
+                "/api/momo/customer/register",
+                json={
+                    "phone_number": self.phone,
+                    "full_name": "Fictional Test Customer",
+                    "id_type": "PASSPORT",
+                    "id_number": "TEST-ID-84521",
+                    "email": "controlled-test@example.test",
+                    "pin": "4826",
+                    "device_id": "browser-device-1",
+                    "privacy_notice_accepted": True,
+                },
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            headers = {"Authorization": f"Bearer {created.json()['token']}"}
+            database.set_account_frozen(self.phone, "ADMIN_MANUAL")
+
+            started = self.client.post(
+                "/api/momo/transaction/initiate",
+                headers=headers,
+                json={
+                    "transaction_type": "TRANSFER",
+                    "amount": 1,
+                    "recipient": "0242002002",
+                    "device_id": "new-device-for-signal-test",
+                    "scenario": "RECENT_SIM_SWAP",
+                    "live_mtn": False,
+                },
+            )
+            self.assertEqual(started.status_code, 200, started.text)
+            with patch.object(
+                self.momo_simulator.fraud_detector,
+                "assess_transaction",
+                return_value=assessment,
+            ):
+                blocked = self.client.post(
+                    "/api/momo/transaction/verify",
+                    headers=headers,
+                    json={
+                        "session_id": started.json()["session_id"],
+                        "code": "4826",
+                    },
+                )
+
+        self.assertEqual(blocked.status_code, 200, blocked.text)
+        self.assertEqual(blocked.json()["status"], "BLOCKED")
+        self.assertEqual(blocked.json()["decision"], "BLOCKED_BY_ACCOUNT_FREEZE")
+        self.assertEqual(blocked.json()["risk_decision"], "BLOCK")
+        self.assertEqual(blocked.json()["risk_level"], "HIGH")
+        self.assertEqual(blocked.json()["reasons"], ["Recent SIM swap"])
+        self.assertEqual(blocked.json()["account_frozen_reason"], "ADMIN_MANUAL")
+        self.assertTrue(blocked.json()["case_created"])
+
+        transaction = next(
+            row
+            for row in database.get_recent_transactions_feed()
+            if row["transaction_reference"] == blocked.json()["transaction_reference"]
+        )
+        self.assertEqual(transaction["status"], "BLOCKED")
+        self.assertEqual(transaction["reasons"], ["Recent SIM swap"])
+        self.assertTrue(transaction["risk_signals"]["recent_sim_swap"])
+
+        with patch.dict(os.environ, {"MOMO_ADMIN_TOKEN": admin_token}, clear=False):
+            admin_headers = {"X-Admin-Token": admin_token}
+            analytics = self.client.get(
+                "/api/admin/analytics",
+                headers=admin_headers,
+            )
+            self.assertEqual(analytics.status_code, 200, analytics.text)
+            admin_transaction = next(
+                row
+                for row in analytics.json()["recent_transactions"]
+                if row["transaction_reference"]
+                == blocked.json()["transaction_reference"]
+            )
+            self.assertEqual(admin_transaction["status"], "BLOCKED")
+            self.assertEqual(admin_transaction["risk_level"], "HIGH")
+            self.assertEqual(admin_transaction["reasons"], ["Recent SIM swap"])
+            self.assertTrue(admin_transaction["risk_signals"]["recent_sim_swap"])
+
+            cases = self.client.get(
+                "/api/admin/fraud-cases",
+                headers=admin_headers,
+            )
+            self.assertEqual(cases.status_code, 200, cases.text)
+            case = next(
+                item
+                for item in cases.json()["cases"]
+                if item["transaction_reference"]
+                == blocked.json()["transaction_reference"]
+            )
+            self.assertEqual(case["fraud_reasons"], ["Recent SIM swap"])
+            self.assertEqual(case["risk_level"], "HIGH")
+            self.assertTrue(case["account_frozen"])
+            self.assertEqual(case["account_freeze_reason"], "ADMIN_MANUAL")
+
+            unfrozen = self.client.post(
+                f"/api/admin/accounts/{self.phone}/unfreeze",
+                headers=admin_headers,
+            )
+            self.assertEqual(unfrozen.status_code, 200, unfrozen.text)
 
     def test_customer_unfreeze_request_is_visible_until_admin_unfreezes(self):
         admin_token = "customer-review-test-token-123456"
