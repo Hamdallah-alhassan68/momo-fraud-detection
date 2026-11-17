@@ -551,6 +551,53 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
             200000.0,
         )
 
+    def test_high_risk_block_does_not_lock_wallet_from_new_transactions(self):
+        from services import momo_simulator
+
+        original_balances = dict(momo_simulator.BALANCES)
+        try:
+            session = momo_simulator.initiate_transaction(
+                customer_ref="WALLET-1001",
+                transaction_type="TRANSFER",
+                amount=25,
+                recipient="WALLET-2001",
+            )
+            high_risk_assessment = {
+                "risk_score": 0.9,
+                "risk_level": "HIGH",
+                "decision": "BLOCK",
+                "isolation_forest_score": 0.9,
+                "rule_score": 5,
+                "reasons": ["IP/network mismatch"],
+            }
+            with patch.object(
+                fraud_detector,
+                "assess_transaction",
+                return_value=high_risk_assessment,
+            ):
+                result = momo_simulator.verify_transaction(
+                    session["session_id"], "2233"
+                )
+
+            self.assertEqual(result["status"], "BLOCKED")
+            self.assertIn("IP/network mismatch", result["reasons"])
+            self.assertNotIn("frozen", result["message"].lower())
+            self.assertFalse(database.get_account_status("WALLET-1001")["frozen"])
+
+            next_session = momo_simulator.initiate_transaction(
+                customer_ref="WALLET-1001",
+                transaction_type="TRANSFER",
+                amount=25,
+                recipient="WALLET-2001",
+            )
+            self.assertEqual(
+                database.get_momo_session(next_session["session_id"])["status"],
+                "PENDING",
+            )
+        finally:
+            momo_simulator.BALANCES.clear()
+            momo_simulator.BALANCES.update(original_balances)
+
     def test_resolved_analyst_outcomes_are_returned_as_a_daily_trend(self):
         for index, decision in enumerate(
             ("FRAUD_CONFIRMED", "LEGITIMATE", "INCONCLUSIVE")
@@ -803,7 +850,6 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
             result = momo_simulator.verify_transaction(session["session_id"], "2233")
             self.assertTrue(result["signals"]["recent_sim_swap"])
         finally:
-            momo_simulator.FROZEN_UNTIL.pop("WALLET-1001", None)
             momo_simulator._rebuild_balances()
 
         with self.assertRaisesRegex(ValueError, "Unsupported simulation scenario"):
@@ -877,7 +923,6 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
                 ],
             )
         finally:
-            momo_simulator.FROZEN_UNTIL.pop("WALLET-1001", None)
             momo_simulator._rebuild_balances()
 
     def test_simulated_security_signals_raise_score_and_include_reasons(self):
@@ -950,7 +995,6 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
                 c for c in momo_simulator.CUSTOMERS if c["ref"] != custom_ref
             ]
             momo_simulator.BALANCES.pop(custom_ref, None)
-            momo_simulator.FROZEN_UNTIL.pop(custom_ref, None)
             momo_simulator._rebuild_balances()
 
     def test_simulator_rejects_invalid_custom_wallet_reference(self):
@@ -1041,8 +1085,6 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
 
         self.simulator = momo_simulator
         self.original_balances = dict(momo_simulator.BALANCES)
-        self.original_frozen_until = dict(momo_simulator.FROZEN_UNTIL)
-        momo_simulator.FROZEN_UNTIL.clear()
         self.original_email_verified = momo_simulator.CUSTOMERS[0][
             "email_verified"
         ]
@@ -1081,8 +1123,6 @@ class MediumRiskEmailStepUpTests(unittest.TestCase):
             ] = self.original_security_code_hash
         self.simulator.BALANCES.clear()
         self.simulator.BALANCES.update(self.original_balances)
-        self.simulator.FROZEN_UNTIL.clear()
-        self.simulator.FROZEN_UNTIL.update(self.original_frozen_until)
         database.DATABASE_PATH = self.original_database_path
         self.temp_dir.cleanup()
 

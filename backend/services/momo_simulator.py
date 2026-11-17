@@ -333,11 +333,6 @@ def _ensure_customer(customer_ref):
     return customer
 
 
-# Sessions are temporarily frozen after a blocked transaction.
-SESSION_FREEZE_MINUTES = 2
-FROZEN_UNTIL = {}
-
-
 def remove_sandbox_customer(customer_ref):
     """Clear one sandbox customer's runtime-only profile and balance."""
     CUSTOMERS[:] = [
@@ -349,7 +344,6 @@ def remove_sandbox_customer(customer_ref):
         )
     ]
     BALANCES.pop(customer_ref, None)
-    FROZEN_UNTIL.pop(customer_ref, None)
 
 
 def _mask_phone(phone):
@@ -404,7 +398,6 @@ def _mask_email(email):
 def get_customers():
     """Demo customers for the simulator UI (PIN never exposed)."""
     customers = []
-    now_utc = datetime.now(timezone.utc)
 
     for customer in CUSTOMERS:
         copy = dict(customer)
@@ -416,15 +409,6 @@ def get_customers():
         copy["id_type"] = customer.get("id_type", "GHANA_CARD")
         id_num = customer.get("id_number", "")
         copy["id_number_masked"] = (id_num[:4] + "***" + id_num[-2:]) if len(id_num) > 6 else id_num
-
-        freeze_deadline = FROZEN_UNTIL.get(customer["ref"])
-        still_frozen = bool(freeze_deadline and freeze_deadline > now_utc)
-        copy["frozen"] = still_frozen
-        copy["frozen_for"] = (
-            int((freeze_deadline - now_utc).total_seconds())
-            if still_frozen
-            else 0
-        )
 
         account_status = get_account_status(customer["ref"])
         copy["account_frozen"] = account_status.get("frozen", False)
@@ -459,18 +443,9 @@ def initiate_transaction(
     customer = _ensure_customer(customer_ref)
     customer_ref = customer["ref"]
 
-    freeze_deadline = FROZEN_UNTIL.get(customer_ref)
-    now_utc = datetime.now(timezone.utc)
-    if freeze_deadline and freeze_deadline > now_utc:
-        remaining = int((freeze_deadline - now_utc).total_seconds())
-        raise ValueError(
-            f"Your session is temporarily frozen after a blocked "
-            f"transaction. Try again in about {remaining} seconds."
-        )
-
     if get_account_status(customer_ref).get("frozen"):
         raise ValueError(
-            "Your account is frozen at your request (security freeze). "
+            "Your wallet is frozen. "
             "Unfreeze it from the security menu before sending money."
         )
 
@@ -742,7 +717,7 @@ def verify_transaction(
 
     if get_account_status(customer["ref"]).get("frozen"):
         raise ValueError(
-            "Your account is frozen at your request (security freeze). "
+            "Your wallet is frozen. "
             "Unfreeze it from the security menu before sending money."
         )
 
@@ -1088,15 +1063,6 @@ def verify_transaction(
         live_mtn=live_mtn,
         customer=customer,
     )
-
-    if outcome.get("status") == "BLOCKED":
-        FROZEN_UNTIL[customer["ref"]] = (
-            datetime.now(timezone.utc) + timedelta(minutes=SESSION_FREEZE_MINUTES)
-        )
-        outcome["message"] += (
-            f" Your session has been frozen for {SESSION_FREEZE_MINUTES} "
-            "minutes."
-        )
 
     return outcome
 

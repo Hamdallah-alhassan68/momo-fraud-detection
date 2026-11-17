@@ -361,11 +361,31 @@ export default function MomoSimulator() {
 
                 {customer?.account_frozen && (
                   <div className="security-frozen-banner">
-                    <strong>Account frozen by customer request</strong>
+                    <strong>
+                      {customer.account_frozen_reason === "FROZEN_BY_CUSTOMER"
+                        ? "Wallet frozen by your request"
+                        : "Wallet currently frozen"}
+                    </strong>
                     <p>
-                      No money can leave your wallet. Use the security section
-                      below to unfreeze and resume sending.
+                      {customer.account_frozen_reason === "FROZEN_BY_CUSTOMER"
+                        ? "This security freeze is separate from transaction risk checks. Transfers are scored after PIN/OTP confirmation; an IP or network change alone does not create a freeze."
+                        : `Reason: ${customer.account_frozen_reason || "not recorded"}. Use the security controls below to unfreeze and resume sending.`}
                     </p>
+                    <button
+                      type="button"
+                      className="security-button unfreeze"
+                      onClick={() => {
+                        setSecurityInfo("");
+                        setError("");
+                        setSecurityCode("");
+                        setSecurityMode("unfreeze");
+                        document
+                          .getElementById("momo-security-controls")
+                          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                      }}
+                    >
+                      Go to unfreeze controls
+                    </button>
                   </div>
                 )}
 
@@ -625,7 +645,7 @@ export default function MomoSimulator() {
                   </small>
                 </fieldset>
 
-                <div className="security-section">
+                <div className="security-section" id="momo-security-controls">
                   <p className="security-note">
                     Think someone else has access? Freeze your account instantly —
                     this control works even when the fraud engine has not flagged
@@ -739,8 +759,8 @@ export default function MomoSimulator() {
 
                 {customer?.account_frozen ? (
                   <p className="frozen-send-note">
-                    Sending is disabled — your account is frozen at your
-                    request. Unfreeze it above to resume.
+                    Sending is disabled while this wallet is frozen. Use the
+                    security controls above to unfreeze it.
                   </p>
                 ) : (
                   <button type="submit" className="send-button" disabled={loading}>
