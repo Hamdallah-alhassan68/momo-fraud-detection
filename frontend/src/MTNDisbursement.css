@@ -905,6 +905,46 @@
   gap: 18px;
 }
 
+.pin-freeze-review {
+  width: 100%;
+  padding: 14px;
+  border: 1px solid #fed7aa;
+  border-radius: 12px;
+  background: #fff7ed;
+  color: #7c2d12;
+  text-align: left;
+}
+
+.pin-freeze-review strong {
+  display: block;
+  margin-bottom: 5px;
+}
+
+.pin-freeze-review p {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.pin-freeze-review-button {
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #075985;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 750;
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.pin-freeze-review-button:disabled {
+  color: #64748b;
+  cursor: not-allowed;
+}
+
 .pin-screen-header h4 {
   margin: 8px 0 4px;
   font-size: 1.25rem;

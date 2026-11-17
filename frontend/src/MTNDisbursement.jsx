@@ -659,7 +659,34 @@ export default function MTNDisbursement() {
         }
       }
     } catch (err) {
-      setError(err.message || "Incorrect PIN or authorization failure.");
+      const message = err.message || "Incorrect PIN or authorization failure.";
+      if (/your wallet is frozen/i.test(message)) {
+        const freezeReason = /ADMIN_MANUAL|manual administrator freeze/i.test(
+          message,
+        )
+          ? "ADMIN_MANUAL"
+          : /FROZEN_BY_CUSTOMER|security freeze requested/i.test(message)
+            ? "FROZEN_BY_CUSTOMER"
+            : customerAccount?.account_frozen_reason;
+        setWalletFrozen(true);
+        setCustomerAccount((current) =>
+          current
+            ? {
+                ...current,
+                account_frozen: true,
+                account_frozen_reason:
+                  freezeReason || current.account_frozen_reason,
+              }
+            : current,
+        );
+        setError(
+          freezeReason === "ADMIN_MANUAL"
+            ? "This wallet was manually frozen by an administrator. That is not a fraud-risk finding."
+            : message,
+        );
+      } else {
+        setError(message);
+      }
       setStep("auth");
     } finally {
       setLoading(false);
@@ -1118,7 +1145,7 @@ export default function MTNDisbursement() {
                       >
                         {unfreezeRequestPending
                           ? "Admin review requested"
-                          : "Request admin review"}
+                          : "Make a complaint / request review"}
                       </button>
                     )}
                   </div>
@@ -1664,6 +1691,39 @@ export default function MTNDisbursement() {
                     <strong>{recipientName ? `${recipientName} (${recipientNumber})` : recipientNumber}</strong>
                   </p>
                 </div>
+
+                {walletFrozen &&
+                  customerAccount?.account_frozen_reason !==
+                    "FROZEN_BY_CUSTOMER" && (
+                    <div className="pin-freeze-review" role="status">
+                      <strong>
+                        {customerAccount?.account_frozen_reason ===
+                        "ADMIN_MANUAL"
+                          ? "Administrator-applied freeze"
+                          : "Wallet freeze"}
+                      </strong>
+                      <p>
+                        {customerAccount?.account_frozen_reason ===
+                        "ADMIN_MANUAL"
+                          ? "ADMIN_MANUAL means an administrator applied this lock. It is not one of the tested IP, SIM, device, or transaction risk signals."
+                          : "This is an account freeze, not a risk decision for this transfer. You can ask an administrator to review it."}
+                      </p>
+                      <button
+                        type="button"
+                        className="pin-freeze-review-button"
+                        disabled={unfreezeRequestPending}
+                        onClick={() => {
+                          setError("");
+                          setUnfreezeRequestNote("");
+                          setActiveModal("freeze");
+                        }}
+                      >
+                        {unfreezeRequestPending
+                          ? "Admin review request pending"
+                          : "Make a complaint / request admin review"}
+                      </button>
+                    </div>
+                  )}
 
                 <div className="pin-dots-display">
                   {Array.from(
