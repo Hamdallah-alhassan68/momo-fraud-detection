@@ -35,22 +35,38 @@ the full path to that interpreter instead:
 C:\Path\To\Python313\python.exe -m venv .venv-py313
 ```
 
+## Hosted database
+
+The backend uses SQLite locally by default. On Render Free, its local
+filesystem is temporary, so the SQLite database can disappear after a restart,
+spin-down, or redeploy. The Render Blueprint therefore uses the Free service
+plan without a disk; configure an external Postgres database before relying on
+hosted data.
+
+To use Neon Postgres, add `MOMO_DATABASE_URL` in the Render service's
+Environment settings and paste the Neon **pooled** connection string as a
+secret value. The backend creates or updates its schema on startup and uses
+Postgres whenever this variable is present; otherwise it falls back to local
+SQLite. Never commit or share the connection string. A new Neon database
+starts empty and does not restore records that were lost from Render.
+
+Neon's Free plan has storage, compute, and backup limitations. Keep separate
+database exports and verify restoration before treating the service as a
+durable store. Test the deployment with synthetic transactions and confirm
+they remain after a Render restart before inviting testers.
+
 ## Deploying the frontend
 
 The repository includes a Render Blueprint at `render.yaml` for the FastAPI
 backend. Push the repository to GitHub, create a new Blueprint in Render, and
 select that repository. During setup, enter `FRONTEND_ORIGINS` as the exact
 Vercel frontend origin, such as `https://<project>.vercel.app` (no trailing
-slash). The Blueprint selects Python 3.13.7, installs `backend/requirements.txt`,
-starts Uvicorn on Render's assigned port, generates persistent authentication
-and audit secrets, and stores SQLite at `/var/data/fraud.db` on a 1 GB
-persistent disk. Render requires a paid web-service plan for persistent disks.
-Keep the service at one instance while using its SQLite database and
-in-process event stream.
-If `MOMO_AUTH_SECRET` is not set, the backend stores its fallback signing key
-beside the database on that persistent disk so wallet sessions remain valid
-after a deployment restart. Configure the generated Render secret and do not
-scale this SQLite-backed service to multiple instances.
+slash). The Blueprint selects Python 3.13.7, installs
+`backend/requirements.txt`, starts Uvicorn on Render's assigned port, and
+health-checks `/api/health`. It uses Render's Free plan with no disk, so set
+`MOMO_DATABASE_URL` to Neon before using hosted data. Configure stable
+authentication and audit secrets in Render. Keep the service at one instance
+because the dashboard event stream is process-local.
 
 The Blueprint selects MTN sandbox and disables the bundled demo-admin accounts
 for hosted deployments. Configure Africa's Talking and SMTP secrets in Render

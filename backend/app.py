@@ -7,7 +7,6 @@ import os
 import queue
 import re
 import secrets
-import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -16,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from database.database import (
+    INTEGRITY_ERRORS,
     create_admin_user,
     create_audit_log,
     get_customer_recipient_history,
@@ -303,12 +303,14 @@ def require_viewer(
     return user
 
 
-@app.exception_handler(sqlite3.IntegrityError)
-async def handle_integrity_error(_request: Request, _error: sqlite3.IntegrityError):
+async def handle_integrity_error(_request: Request, _error: Exception):
     return JSONResponse(
         status_code=409,
         content={"error": "The requested change conflicts with existing data."},
     )
+
+for integrity_error in INTEGRITY_ERRORS:
+    app.add_exception_handler(integrity_error, handle_integrity_error)
 
 
 @app.get("/")
@@ -474,7 +476,7 @@ def create_user(
                 "role": role,
             },
         }
-    except sqlite3.IntegrityError:
+    except INTEGRITY_ERRORS:
         raise HTTPException(status_code=409, detail=f"Username '{username}' already exists.")
 
 
@@ -790,7 +792,7 @@ def momo_customer_register(
             trusted=True,
             location_consent=body.get("location_consent") is True,
         )
-    except sqlite3.IntegrityError as error:
+    except INTEGRITY_ERRORS as error:
         raise HTTPException(
             status_code=409,
             detail="This number already has a sandbox wallet. Sign in instead.",

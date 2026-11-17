@@ -19,19 +19,19 @@ No paid service is enabled by this document.
 | Real SMS | Sandbox SMS is not delivered to real handsets. Production SMS requires an enabled provider account and credits. | Complete provider activation, verify sender/route, and use production credentials only on the backend. | Per-message charges; exact tariff is shown by the provider account. | Low to medium, depending on activation requirements. Defer until approved. |
 | MTN Collection / Disbursement | Separate MTN API clients and admin routes exist, but the hosted Blueprint sets `MOMO_SIMULATION_ONLY=true` and selects sandbox Disbursement. Customer cash-in/cash-out remain simulations. Medium-risk Disbursement has no live step-up path; an MTN callback receiver is not implemented. | Obtain MTN production approval and distinct credentials, finish step-up and callback/status reconciliation, test with controlled accounts, and complete operational and compliance review. Keep production gated until all checks pass. | Provider/business fees and real transaction charges may apply; verify directly with MTN. | High. Do not switch production on yet. |
 | Medium-risk Collection gate | A production payment request must not be sent until a medium-risk step-up is completed. This repository now returns `STEP_UP_REQUIRED` without contacting MTN for MEDIUM risk. | Implement and test a challenge/verification flow before permitting any MEDIUM-risk live Collection request. | No new provider cost for the gate itself. | Low for this safety gate; medium for the full step-up flow. Gate now in place. |
-| Persistent database | The repository Blueprint specifies SQLite at `/var/data/fraud.db` on a 1 GB disk, but the currently deployed service was confirmed to have no disk and `MOMO_DATABASE_PATH=/opt/render/project/src/fraud.db`. Render's Free filesystem is ephemeral, so the active database file is lost on deploy, restart, or spin-down. The SQLite database file is also tracked in Git; that committed snapshot is not a live backup. | Preserve and inspect any local/backup database before restoring. For persistence, attach a paid disk and point `MOMO_DATABASE_PATH` at its mount (for the Blueprint, `/var/data/fraud.db`), or migrate to a database service. Keep one backend instance with SQLite. | Free web services cannot attach persistent disks. A paid web-service plan and disk cost money; check the current Render upgrade screen for the exact total. Free Render Postgres is limited to 1 GB, expires after 30 days, and has no backups, so it is only a temporary test option. | Low to retain SQLite once storage is configured; high for PostgreSQL migration and data verification. |
-| PostgreSQL migration | The backend uses `sqlite3` directly and SQLite-specific SQL/schema behavior; a PostgreSQL URL cannot simply be substituted. No PostgreSQL driver is currently installed. | Choose an adapter/ORM, add migrations, convert SQL and error handling, migrate rows while preserving audit-chain integrity, and run regression/restore tests. | Database hosting is recurring cash cost; engineering time is a separate one-time cost. Exact hosting price is plan-dependent. | High. Get a quote and confirm the need before starting. |
+| Persistent database | The deployed Render service has no disk and uses `MOMO_DATABASE_PATH=/opt/render/project/src/fraud.db`; Render Free storage is ephemeral. The SQLite file tracked in Git is not a live backup. The backend now supports an external Postgres URL, but Neon setup and hosted persistence have not yet been verified. | Add Neon’s pooled connection URL as the Render-only `MOMO_DATABASE_URL` secret, deploy, and verify transactions persist through a restart. Keep a separate export and test restore. A new Neon database is empty; it will not recover lost Render records. | Can remain $0 while within Neon Free quotas (currently 1 GB/project and 100 CU-hours/project); compute sleeps after inactivity. Free usage and backup limits apply. | Database adapter and SQLite regression tests are implemented; hosted connection, persistence, and backup verification remain. |
+| PostgreSQL migration | The application previously used SQLite-specific SQL and error handling. It now supports Postgres through psycopg, Postgres schema initialization, and shared integrity-error handling while retaining SQLite locally. No existing records have been imported. | Configure `MOMO_DATABASE_URL` in Render, test the hosted schema and core flows, then decide separately whether a verified local database copy should be migrated. Preserve and verify audit-chain integrity before any import. | Neon Free can cost $0 within its quotas; paid usage is separate and should be checked in the Neon dashboard. | Adapter implemented and 151 backend tests pass; live Neon integration and any data migration remain. |
 
 ## Work sequence
 
-1. **No-new-provider work:** keep simulation-only enabled; validate hosted
-   dashboard metrics and client-IP handling; continue local tests.
+1. **Free database setup:** add the Neon pooled connection string as the Render
+   `MOMO_DATABASE_URL` secret, deploy, and verify persistence with synthetic data.
 2. **Finish transaction safety:** complete medium-risk step-up and provider
    status/callback handling before enabling any production Collection or
    Disbursement route.
 3. **Request quotes before integration:** check the account-specific prices
-   for Live SMS, Ghana voice calling, SIM-change data, MTN production fees, and
-   managed PostgreSQL. Do not share API keys in chat or commit them.
+   for Live SMS, Ghana voice calling, SIM-change data, and MTN production fees.
+   Do not share API keys in chat or commit them.
 4. **Decide feature by feature:** implement only after the user approves the
    provider and acceptable cost. Keep each paid integration behind a server-side
    configuration gate and test it in the provider sandbox first.
@@ -52,4 +52,5 @@ No paid service is enabled by this document.
 
 Render's current storage limits are documented at
 [Persistent Disks](https://render.com/docs/disks) and
-[Free instances](https://render.com/docs/free).
+[Free instances](https://render.com/docs/free). Neon plan quotas are
+documented at [Neon plans](https://neon.com/docs/introduction/plans).

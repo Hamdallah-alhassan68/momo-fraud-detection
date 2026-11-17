@@ -2,20 +2,18 @@ services:
   - type: web
     name: momo-fraud-detection-api
     runtime: python
-    plan: starter
+    plan: free
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
-    disk:
-      name: momo-sentinel-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: 3.13.7
       - key: MOMO_DATABASE_PATH
-        value: /var/data/fraud.db
+        value: /opt/render/project/src/fraud.db
+      - key: MOMO_DATABASE_URL
+        sync: false
       - key: MOMO_AUTH_SECRET
         generateValue: true
       - key: MOMO_AUDIT_HMAC_KEY
