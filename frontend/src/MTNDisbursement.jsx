@@ -646,6 +646,15 @@ export default function MTNDisbursement() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "PIN verification failed.");
 
+      if (data.account_frozen_reason) {
+        setWalletFrozen(true);
+        setCustomerAccount((current) => ({
+          ...(current || {}),
+          account_frozen: true,
+          account_frozen_reason: data.account_frozen_reason,
+        }));
+      }
+
       if (data.status === "STEP_UP_REQUIRED") {
         setStepUpChallenge(data);
         setStepUpInput("");
@@ -1701,39 +1710,6 @@ export default function MTNDisbursement() {
                   </p>
                 </div>
 
-                {walletFrozen &&
-                  customerAccount?.account_frozen_reason !==
-                    "FROZEN_BY_CUSTOMER" && (
-                    <div className="pin-freeze-review" role="status">
-                      <strong>
-                        {customerAccount?.account_frozen_reason ===
-                        "ADMIN_MANUAL"
-                          ? "Administrator-applied freeze"
-                          : "Wallet freeze"}
-                      </strong>
-                      <p>
-                        {customerAccount?.account_frozen_reason ===
-                        "ADMIN_MANUAL"
-                          ? "ADMIN_MANUAL means an administrator applied this lock. It is not one of the tested IP, SIM, device, or transaction risk signals."
-                          : "This is an account freeze, not a risk decision for this transfer. You can ask an administrator to review it."}
-                      </p>
-                      <button
-                        type="button"
-                        className="pin-freeze-review-button"
-                        disabled={unfreezeRequestPending}
-                        onClick={() => {
-                          setError("");
-                          setUnfreezeRequestNote("");
-                          setActiveModal("freeze");
-                        }}
-                      >
-                        {unfreezeRequestPending
-                          ? "Admin review request pending"
-                          : "Make a complaint / request admin review"}
-                      </button>
-                    </div>
-                  )}
-
                 <div className="pin-dots-display">
                   {Array.from(
                     { length: transactionType === "TRANSFER" ? 4 : 6 },
@@ -2025,6 +2001,41 @@ export default function MTNDisbursement() {
                       </p>
                     </div>
 
+                    {receipt.account_frozen_reason &&
+                      receipt.account_frozen_reason !==
+                        "FROZEN_BY_CUSTOMER" && (
+                        <div className="receipt-freeze-review" role="status">
+                          <strong>This account is frozen</strong>
+                          <p>
+                            Reason:{" "}
+                            {getFreezeReasonLabel(
+                              receipt.account_frozen_reason,
+                            )}
+                          </p>
+                          <p>
+                            The freeze reason is separate from the transaction
+                            risk signals shown below.
+                            {receipt.account_frozen_reason === "ADMIN_MANUAL"
+                              ? " An administrator applied this lock; it is not a fraud-risk finding."
+                              : ""}
+                          </p>
+                          <button
+                            type="button"
+                            className="receipt-freeze-review-button"
+                            disabled={unfreezeRequestPending}
+                            onClick={() => {
+                              setError("");
+                              setUnfreezeRequestNote("");
+                              setActiveModal("freeze");
+                            }}
+                          >
+                            {unfreezeRequestPending
+                              ? "Admin review request pending"
+                              : "Make a complaint / request admin review"}
+                          </button>
+                        </div>
+                      )}
+
                     <div className="receipt-table">
                       <div className="receipt-data-row">
                         <span>Transaction Reference:</span>
@@ -2073,7 +2084,9 @@ export default function MTNDisbursement() {
                         <CrossIcon />
                       </div>
                       <h4>
-                        {receipt.status === "NOT_SUBMITTED"
+                        {receipt.account_frozen_reason
+                          ? "Wallet frozen"
+                          : receipt.status === "NOT_SUBMITTED"
                           ? "Transfer Not Sent"
                           : receipt.status === "FAILED"
                             ? "Transfer Failed"
@@ -2088,6 +2101,12 @@ export default function MTNDisbursement() {
                     </div>
 
                     <div className="receipt-table">
+                      {receipt.transaction_reference && (
+                        <div className="receipt-data-row">
+                          <span>Transaction Reference:</span>
+                          <code>{receipt.transaction_reference}</code>
+                        </div>
+                      )}
                       <div className="receipt-data-row">
                         <span>Decision:</span>
                         <strong className="text-danger">
@@ -2100,16 +2119,6 @@ export default function MTNDisbursement() {
                         <div className="receipt-data-row">
                           <span>Fraud engine decision:</span>
                           <strong>{receipt.risk_decision}</strong>
-                        </div>
-                      )}
-                      {receipt.account_frozen_reason && (
-                        <div className="receipt-data-row">
-                          <span>Account freeze reason:</span>
-                          <strong>
-                            {getFreezeReasonLabel(
-                              receipt.account_frozen_reason,
-                            )}
-                          </strong>
                         </div>
                       )}
                       <div className="receipt-data-row">
