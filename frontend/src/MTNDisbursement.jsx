@@ -1149,23 +1149,20 @@ export default function MTNDisbursement() {
                         Unfreeze wallet
                       </button>
                     )}
-                    {customerAccount?.account_frozen_reason !==
-                      "FROZEN_BY_CUSTOMER" && (
-                      <button
-                        type="button"
-                        className="text-button"
-                        disabled={unfreezeRequestPending}
-                        onClick={() => {
-                          setError("");
-                          setUnfreezeRequestNote("");
-                          setActiveModal("freeze");
-                        }}
-                      >
-                        {unfreezeRequestPending
-                          ? "Admin review requested"
-                          : "Make a complaint / request review"}
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="text-button"
+                      disabled={unfreezeRequestPending}
+                      onClick={() => {
+                        setError("");
+                        setUnfreezeRequestNote("");
+                        setActiveModal("freeze");
+                      }}
+                    >
+                      {unfreezeRequestPending
+                        ? "Admin review requested"
+                        : "Make a complaint / contact MTN Admin"}
+                    </button>
                   </div>
                 </div>
               )}
@@ -2001,9 +1998,7 @@ export default function MTNDisbursement() {
                       </p>
                     </div>
 
-                    {receipt.account_frozen_reason &&
-                      receipt.account_frozen_reason !==
-                        "FROZEN_BY_CUSTOMER" && (
+                    {receipt.account_frozen_reason && (
                         <div className="receipt-freeze-review" role="status">
                           <strong>This account is frozen</strong>
                           <p>
@@ -2014,9 +2009,14 @@ export default function MTNDisbursement() {
                           </p>
                           <p>
                             The freeze reason is separate from the transaction
-                            risk signals shown below.
+                            risk signals shown below. You can request an Admin
+                            review here.
                             {receipt.account_frozen_reason === "ADMIN_MANUAL"
                               ? " An administrator applied this lock; it is not a fraud-risk finding."
+                              : ""}
+                            {receipt.account_frozen_reason ===
+                            "FROZEN_BY_CUSTOMER"
+                              ? " You can also unfreeze it with your wallet PIN."
                               : ""}
                           </p>
                           <button
@@ -2031,7 +2031,7 @@ export default function MTNDisbursement() {
                           >
                             {unfreezeRequestPending
                               ? "Admin review request pending"
-                              : "Make a complaint / request admin review"}
+                              : "Make a complaint / contact MTN Admin"}
                           </button>
                         </div>
                       )}
@@ -2334,15 +2334,13 @@ export default function MTNDisbursement() {
                 </>
               )}
 
-              {walletFrozen &&
-                customerAccount?.account_frozen_reason !==
-                  "FROZEN_BY_CUSTOMER" && (
+              {walletFrozen && (
                   unfreezeRequestPending ? (
                     <div className="form-success-alert" role="status">
                       <CheckIcon />
                       <span>
-                        Your request is pending. An Admin can review it from
-                        Overview → Customer unfreeze requests.
+                        Your request is pending. An MTN Admin can review it
+                        from Overview → Customer unfreeze requests.
                       </span>
                     </div>
                   ) : (
@@ -2351,7 +2349,7 @@ export default function MTNDisbursement() {
                         className="field-label"
                         htmlFor="unfreeze-request-note"
                       >
-                        Message to Admin
+                        Message to MTN Admin
                       </label>
                       <textarea
                         id="unfreeze-request-note"
@@ -2370,7 +2368,9 @@ export default function MTNDisbursement() {
                         disabled={loading}
                         onClick={handleUnfreezeRequest}
                       >
-                        {loading ? "Sending request..." : "Request unfreeze review"}
+                        {loading
+                          ? "Sending request..."
+                          : "Send complaint for MTN Admin review"}
                       </button>
                     </>
                   )
