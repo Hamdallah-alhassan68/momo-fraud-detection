@@ -304,8 +304,10 @@ The runtime evaluation data is synthetic PaySim data. Its reported metrics
 describe both the Isolation Forest and the hybrid policy on a fixed temporal
 holdout; they are not real-world performance evidence or a calibration
 guarantee for customer behavior or security signals absent from PaySim. The
-current runtime MEDIUM boundary is 0.45 and HIGH boundary is 0.525. On the
-fixed temporal test split, the hybrid MEDIUM-or-higher policy reports 17.3%
+current runtime MEDIUM boundary is 0.45 and HIGH boundary is 0.50 for testing.
+The evaluation figures below were measured using the previously validated
+0.525 HIGH boundary, not the current test setting. On the fixed temporal test
+split, the hybrid MEDIUM-or-higher policy reports 17.3%
 precision, 71.4% recall, and a 2.7% false-positive rate; HIGH reports 23.4%
 precision, 36.4% recall, and a 0.9% false-positive rate. Compared with the
 previous 0.4/0.5 boundaries, the holdout false-positive rates fell from 5.5%

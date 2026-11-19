@@ -714,7 +714,7 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
         self.assertEqual(evaluation["sampled_rows"], 300000)
         self.assertEqual(evaluation["test_rows"], 59850)
         self.assertEqual(evaluation["active_medium_boundary"], 0.45)
-        self.assertEqual(evaluation["active_high_boundary"], 0.525)
+        self.assertEqual(evaluation["active_high_boundary"], 0.5)
         seed_sensitivity = evaluation["hybrid_seed_sensitivity"]
         self.assertEqual(seed_sensitivity["seeds"], [42, 7, 21, 99])
         self.assertEqual(
@@ -727,7 +727,7 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
         )
         self.assertEqual(
             evaluation["hybrid_high"]["threshold"],
-            evaluation["active_high_boundary"],
+            0.525,
         )
         sensitivity = evaluation["hybrid_threshold_sensitivity"]
         self.assertEqual(sensitivity["split"], "validation")
@@ -1080,6 +1080,48 @@ class CustomerBehaviorProfileTests(unittest.TestCase):
                 amount=25,
                 recipient="WALLET-2001",
             )
+
+
+class FraudRiskBoundaryTests(unittest.TestCase):
+    def test_high_risk_starts_at_50_percent(self):
+        self.assertEqual(fraud_detector.medium_threshold, 0.5)
+        transaction = {
+            "amount": 25.0,
+            "transaction_type": "TRANSFER",
+            "origin_account": "WALLET-1001",
+            "destination_account": "WALLET-2001",
+            "old_balance_origin": 5000.0,
+            "new_balance_origin": 4975.0,
+            "old_balance_destination": 1600.0,
+            "new_balance_destination": 1625.0,
+        }
+
+        with patch.object(fraud_detector, "if_weight", 0.0), patch.object(
+            fraud_detector, "rule_weight", 1.0
+        ), patch.object(
+            fraud_detector, "calculate_if_score", return_value=0.0
+        ), patch.object(
+            fraud_detector, "normalize_if_score", return_value=0.0
+        ), patch.object(
+            fraud_detector, "calculate_rule_score", return_value=(0.5, [])
+        ):
+            at_boundary = fraud_detector.assess_transaction(transaction, 5)
+
+        self.assertEqual(at_boundary["risk_score"], 0.5)
+        self.assertEqual(at_boundary["risk_level"], "HIGH")
+
+        with patch.object(fraud_detector, "if_weight", 0.0), patch.object(
+            fraud_detector, "rule_weight", 1.0
+        ), patch.object(
+            fraud_detector, "calculate_if_score", return_value=0.0
+        ), patch.object(
+            fraud_detector, "normalize_if_score", return_value=0.0
+        ), patch.object(
+            fraud_detector, "calculate_rule_score", return_value=(0.499, [])
+        ):
+            below_boundary = fraud_detector.assess_transaction(transaction, 5)
+
+        self.assertEqual(below_boundary["risk_level"], "MEDIUM")
 
 
 class TrustedProxyAddressTests(unittest.TestCase):
