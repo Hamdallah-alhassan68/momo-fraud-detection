@@ -470,9 +470,9 @@ td small {
 
 .risk-score-orb {
   --risk-color: #ef4444;
-  flex: 0 0 116px;
-  width: 116px;
-  height: 116px;
+  flex: 0 0 120px;
+  width: 120px;
+  height: 120px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -480,10 +480,13 @@ td small {
   border: 0;
   border-radius: 50%;
   background:
-    radial-gradient(closest-side, white 83%, transparent 85% 100%),
+    radial-gradient(closest-side, #ffffff 82%, transparent 84% 100%),
     conic-gradient(var(--risk-color) var(--risk-progress), #e2e8f0 0);
   color: #991b1b;
-  box-shadow: 0 10px 25px rgba(185, 28, 28, 0.12);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
+  padding: 8px;
+  text-align: center;
+  box-sizing: border-box;
 }
 
 .risk-score-orb.medium {
@@ -556,20 +559,30 @@ td small {
 }
 
 .risk-score-orb span {
-  font-size: 0.84rem;
-  font-weight: 800;
-  letter-spacing: 0.1em;
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  text-transform: uppercase;
+  line-height: 1;
+  margin-bottom: 3px;
+  white-space: nowrap;
 }
 
 .risk-score-orb strong {
-  margin-top: 1px;
-  font-size: 2.25rem;
+  margin: 0;
+  font-size: 1.85rem;
   line-height: 1;
+  font-weight: 800;
+  color: #0f172a;
 }
 
 .risk-score-orb small {
-  font-size: 0.84rem;
-  font-weight: 700;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #94a3b8;
+  line-height: 1;
+  margin-top: 2px;
 }
 
 .risk-brief-copy h3 {
@@ -988,18 +1001,24 @@ td small {
   }
 
   .risk-score-orb {
-    flex-basis: 82px;
-    width: 82px;
-    height: 82px;
-    border-width: 5px;
+    flex-basis: 96px;
+    width: 96px;
+    height: 96px;
+    padding: 6px;
   }
 
   .risk-score-orb strong {
-    font-size: 1.65rem;
+    font-size: 1.45rem;
   }
 
   .risk-score-orb span {
-    font-size: 0.68rem;
+    font-size: 0.46rem;
+    letter-spacing: 0.02em;
+    margin-bottom: 1px;
+  }
+
+  .risk-score-orb small {
+    font-size: 0.62rem;
   }
 
   .evidence-grid,
@@ -1207,4 +1226,125 @@ td small {
   font-size: 0.85rem;
   color: #1e293b;
 }
+
+.table-actions-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.resolve-case-quick-btn {
+  background: #ecfdf5 !important;
+  color: #047857 !important;
+  border-color: #a7f3d0 !important;
+  font-weight: 600 !important;
+}
+
+.resolve-case-quick-btn:hover {
+  background: #10b981 !important;
+  color: #ffffff !important;
+  border-color: #059669 !important;
+}
+
+.case-resolved-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.case-resolved-banner strong {
+  display: block;
+  color: #15803d;
+  font-size: 0.95rem;
+}
+
+.case-resolved-banner span {
+  font-size: 0.82rem;
+  color: #166534;
+}
+
+.resolve-action-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 12px 0 6px;
+}
+
+.resolve-btn-legitimate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #16a34a;
+  color: #ffffff;
+  border: 1px solid #15803d;
+  border-radius: 9px;
+  font-weight: 700;
+  font-size: 0.88rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.resolve-btn-legitimate:hover:not(:disabled) {
+  background: #15803d;
+}
+
+.resolve-btn-fraud {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #dc2626;
+  color: #ffffff;
+  border: 1px solid #b91c1c;
+  border-radius: 9px;
+  font-weight: 700;
+  font-size: 0.88rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.resolve-btn-fraud:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
+.reopen-case-btn {
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  color: #475569;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.reopen-case-btn:hover {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.complaint-channel-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+}
+
+.complaint-channel-pill svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.2;
+}
+
 

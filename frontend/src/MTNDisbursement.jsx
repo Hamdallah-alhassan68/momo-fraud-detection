@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { adminFetch, API_URL } from "./adminApi.js";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { adminFetch, API_URL, subscribeAdminEvents } from "./adminApi.js";
 import { detectDeviceLabel } from "./deviceInfo.js";
 import "./MTNDisbursement.css";
 
@@ -102,6 +102,22 @@ function QrIcon() {
       <rect x="14" y="3" width="7" height="7" />
       <rect x="14" y="14" width="7" height="7" />
       <rect x="3" y="14" width="7" height="7" />
+    </svg>
+  );
+}
+
+function PhoneIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
+    </svg>
+  );
+}
+
+function ChatIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
     </svg>
   );
 }
@@ -215,6 +231,84 @@ export default function MTNDisbursement() {
   const [complaintMessage, setComplaintMessage] = useState("");
   const [complaintError, setComplaintError] = useState("");
   const [showComplaintBox, setShowComplaintBox] = useState(false);
+  const [activeCall, setActiveCall] = useState(null);
+  const callTimerRef = useRef(null);
+  const callAudioCtxRef = useRef(null);
+
+  function stopCallAudio() {
+    if (callAudioCtxRef.current) {
+      try {
+        void callAudioCtxRef.current.close();
+      } catch {}
+      callAudioCtxRef.current = null;
+    }
+  }
+
+  function playDialRingTone() {
+    stopCallAudio();
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      const ctx = new AudioContextClass();
+      callAudioCtxRef.current = ctx;
+      const startAt = ctx.currentTime;
+      for (const freq of [440, 480]) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.04, startAt);
+        gain.gain.exponentialRampToValueAtTime(0.001, startAt + 1.2);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(startAt);
+        osc.stop(startAt + 1.2);
+      }
+    } catch {}
+  }
+
+  function endActiveCall() {
+    if (callTimerRef.current) {
+      clearInterval(callTimerRef.current);
+      callTimerRef.current = null;
+    }
+    stopCallAudio();
+    setActiveCall(null);
+    setComplaintMessage(
+      "Customer care call (100) concluded. Your inquiry was registered with Fraud Operations."
+    );
+  }
+
+  useEffect(() => {
+    if (!activeCall) return;
+
+    if (activeCall.state === "dialing") {
+      const timer = setTimeout(() => {
+        playDialRingTone();
+        setActiveCall((prev) => (prev ? { ...prev, state: "ringing" } : null));
+      }, 1200);
+      return () => clearTimeout(timer);
+    }
+
+    if (activeCall.state === "ringing") {
+      const timer = setTimeout(() => {
+        stopCallAudio();
+        setActiveCall((prev) => (prev ? { ...prev, state: "connected", duration: 0 } : null));
+      }, 2400);
+      return () => clearTimeout(timer);
+    }
+
+    if (activeCall.state === "connected") {
+      callTimerRef.current = setInterval(() => {
+        setActiveCall((prev) => (prev ? { ...prev, duration: (prev.duration || 0) + 1 } : null));
+      }, 1000);
+      return () => {
+        if (callTimerRef.current) {
+          clearInterval(callTimerRef.current);
+          callTimerRef.current = null;
+        }
+      };
+    }
+  }, [activeCall?.state]);
 
   // Statements History
   const [recentTransactions, setRecentTransactions] = useState([
@@ -380,6 +474,28 @@ export default function MTNDisbursement() {
     }
   }, []);
 
+  const refreshCustomerStatus = useCallback(() => {
+    if (!customerToken) return;
+    fetch(`${API_URL}/api/momo/customer/me`, {
+      headers: { Authorization: `Bearer ${customerToken}` },
+    })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) return;
+        setCustomerAccount(data);
+        setSenderNumber(data.phone_number);
+        setWalletFrozen((prevFrozen) => {
+          const nowFrozen = Boolean(data.account_frozen);
+          if (prevFrozen && !nowFrozen) {
+            setFreezeMessage("Great news! Your wallet has been unfrozen by MTN Support.");
+          }
+          return nowFrozen;
+        });
+        setUnfreezeRequestPending(Boolean(data.unfreeze_request_pending));
+      })
+      .catch(() => {});
+  }, [customerToken]);
+
   useEffect(() => {
     detectClientTelemetry();
     loadGatewayConfig();
@@ -409,6 +525,20 @@ export default function MTNDisbursement() {
         setUnfreezeRequestNote("");
       });
   }, [customerToken, detectClientTelemetry, loadGatewayConfig]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeAdminEvents((payload) => {
+      if (
+        payload.event === "case" ||
+        payload.event === "stats" ||
+        payload.event === "account" ||
+        payload.event === "audit"
+      ) {
+        refreshCustomerStatus();
+      }
+    });
+    return () => unsubscribe();
+  }, [refreshCustomerStatus]);
 
   async function handleCustomerLogin(event) {
     event.preventDefault();
@@ -992,17 +1122,28 @@ export default function MTNDisbursement() {
   }
 
   async function submitCustomerComplaint(channel) {
+    if (channel === "CALL") {
+      setActiveCall({
+        number: "100",
+        state: "dialing",
+        duration: 0,
+      });
+      try {
+        window.location.href = "tel:100";
+      } catch {
+        // Native href fallback
+      }
+    }
     const message =
       complaintText.trim() ||
       (channel === "CALL"
-        ? `Customer requested a call about blocked transaction ${receipt?.transaction_reference || "transfer"}.`
+        ? `Customer initiated a support call (100) regarding blocked transfer ${receipt?.transaction_reference || "wallet activity"}.`
         : "");
-    if (!message) {
+    if (!message && channel !== "CALL") {
       setComplaintError("Enter a message for the Admin team.");
       return;
     }
 
-    setLoading(true);
     setComplaintError("");
     setComplaintMessage("");
     try {
@@ -1016,7 +1157,7 @@ export default function MTNDisbursement() {
           },
           body: JSON.stringify({
             channel,
-            message,
+            message: message || "Customer initiated a support call (100).",
             transaction_reference: receipt?.transaction_reference || null,
             phone_number: customerAccount?.phone_number || null,
             customer_ref: customerAccount?.customer_ref || null,
@@ -1030,20 +1171,17 @@ export default function MTNDisbursement() {
 
       setComplaintMessage(
         channel === "CALL"
-          ? "Call complaint logged with Admin. Connecting to customer support at 100..."
+          ? "Dialing customer support at 100. Admin notified of your inquiry."
           : (data.message || "Your complaint message has been sent to the Admin team.")
       );
       setComplaintText("");
       setShowComplaintBox(false);
-      if (channel === "CALL") {
-        window.location.href = "tel:100";
-      }
     } catch (requestError) {
-      setComplaintError(
-        requestError.message || "Could not send your complaint.",
-      );
-    } finally {
-      setLoading(false);
+      if (channel !== "CALL") {
+        setComplaintError(
+          requestError.message || "Could not send your complaint.",
+        );
+      }
     }
   }
 
@@ -1123,13 +1261,30 @@ export default function MTNDisbursement() {
               <div className="balance-surface">
                 <div className="balance-top-labels">
                   <span className="balance-label-text">Available Balance</span>
-                  <button
-                    type="button"
-                    className="balance-visibility-btn"
-                    onClick={() => setShowBalance(!showBalance)}
-                  >
-                    {showBalance ? "Hide" : "Show"}
-                  </button>
+                  <div className="balance-header-controls">
+                    {customerAccount && !walletFrozen && (
+                      <button
+                        type="button"
+                        className="header-freeze-pill-btn"
+                        onClick={() => {
+                          setError("");
+                          setSecurityPin("");
+                          setActiveModal("freeze");
+                        }}
+                        title="Emergency freeze your wallet"
+                      >
+                        <LockIcon />
+                        <span>Freeze</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="balance-visibility-btn"
+                      onClick={() => setShowBalance(!showBalance)}
+                    >
+                      {showBalance ? "Hide" : "Show"}
+                    </button>
+                  </div>
                 </div>
                 <div className="balance-amount-display">
                   <span className="currency-symbol">{displayCurrency}</span>
@@ -1212,34 +1367,44 @@ export default function MTNDisbursement() {
                       )}
                     </p>
                     {freezeMessage && <p>{freezeMessage}</p>}
-                    {customerAccount?.account_frozen_reason ===
-                      "FROZEN_BY_CUSTOMER" && (
+                    <div className="frozen-banner-actions-cluster">
+                      <a
+                        href="tel:100"
+                        className="frozen-banner-call-btn"
+                        onClick={() => submitCustomerComplaint("CALL")}
+                      >
+                        <PhoneIcon />
+                        <span>Call Support to Unfreeze (100)</span>
+                      </a>
+                      {customerAccount?.account_frozen_reason ===
+                        "FROZEN_BY_CUSTOMER" && (
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => {
+                            setError("");
+                            setSecurityPin("");
+                            setActiveModal("freeze");
+                          }}
+                        >
+                          Unfreeze with PIN
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="text-button"
+                        disabled={unfreezeRequestPending}
                         onClick={() => {
                           setError("");
-                          setSecurityPin("");
+                          setUnfreezeRequestNote("");
                           setActiveModal("freeze");
                         }}
                       >
-                        Unfreeze wallet
+                        {unfreezeRequestPending
+                          ? "Admin review requested"
+                          : "Send dispute message to Admin"}
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      className="text-button"
-                      disabled={unfreezeRequestPending}
-                      onClick={() => {
-                        setError("");
-                        setUnfreezeRequestNote("");
-                        setActiveModal("freeze");
-                      }}
-                    >
-                      {unfreezeRequestPending
-                        ? "Admin review requested"
-                        : "Make a complaint / contact MTN Admin"}
-                    </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -1263,26 +1428,28 @@ export default function MTNDisbursement() {
                   <span className="row-chevron">›</span>
                 </button>
 
-                <button
-                  type="button"
-                  className="service-row-btn"
-                  onClick={() => {
-                    setError("");
-                    setSecurityPin("");
-                    setActiveModal("freeze");
-                  }}
-                >
-                  <div className="service-row-left">
-                    <div className="service-icon-wrapper icon-danger">
-                      <AlertIcon />
+                {!walletFrozen && (
+                  <button
+                    type="button"
+                    className="service-row-btn"
+                    onClick={() => {
+                      setError("");
+                      setSecurityPin("");
+                      setActiveModal("freeze");
+                    }}
+                  >
+                    <div className="service-row-left">
+                      <div className="service-icon-wrapper icon-danger">
+                        <AlertIcon />
+                      </div>
+                      <div>
+                        <strong>Emergency Security Freeze</strong>
+                        <span>Lock wallet immediately if suspicious activity occurs</span>
+                      </div>
                     </div>
-                    <div>
-                      <strong>Emergency Security Freeze</strong>
-                      <span>Lock wallet immediately if suspicious activity occurs</span>
-                    </div>
-                  </div>
-                  <span className="row-chevron">›</span>
-                </button>
+                    <span className="row-chevron">›</span>
+                  </button>
+                )}
               </div>
 
               {/* Security Telemetry Verification Notice */}
@@ -1668,6 +1835,19 @@ export default function MTNDisbursement() {
                   <span className="field-label">Signed-in sandbox wallet</span>
                   <strong>{customerAccount.name} · {senderNumber}</strong>
                   <div className="account-session-actions">
+                    {!walletFrozen && (
+                      <button
+                        type="button"
+                        className="text-button account-freeze-action-btn"
+                        onClick={() => {
+                          setError("");
+                          setSecurityPin("");
+                          setActiveModal("freeze");
+                        }}
+                      >
+                        Freeze wallet
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="text-button"
@@ -2096,20 +2276,30 @@ export default function MTNDisbursement() {
                               ? " You can also unfreeze it with your wallet PIN."
                               : ""}
                           </p>
-                          <button
-                            type="button"
-                            className="receipt-freeze-review-button"
-                            disabled={unfreezeRequestPending}
-                            onClick={() => {
-                              setError("");
-                              setUnfreezeRequestNote("");
-                              setActiveModal("freeze");
-                            }}
-                          >
-                            {unfreezeRequestPending
-                              ? "Admin review request pending"
-                              : "Make a complaint / contact MTN Admin"}
-                          </button>
+                          <div className="receipt-freeze-review-actions">
+                            <a
+                              href="tel:100"
+                              className="receipt-freeze-call-btn"
+                              onClick={() => submitCustomerComplaint("CALL")}
+                            >
+                              <PhoneIcon />
+                              <span>Call Support to Unfreeze (100)</span>
+                            </a>
+                            <button
+                              type="button"
+                              className="receipt-freeze-review-button"
+                              disabled={unfreezeRequestPending}
+                              onClick={() => {
+                                setError("");
+                                setUnfreezeRequestNote("");
+                                setActiveModal("freeze");
+                              }}
+                            >
+                              {unfreezeRequestPending
+                                ? "Admin review request pending"
+                                : "Make a complaint / contact MTN Admin"}
+                            </button>
+                          </div>
                         </div>
                       )}
 
@@ -2258,7 +2448,7 @@ export default function MTNDisbursement() {
                           disabled={loading}
                           onClick={() => submitCustomerComplaint("CALL")}
                         >
-                          <span className="btn-icon">📞</span>
+                          <PhoneIcon />
                           <span>Call Support to Complain (100)</span>
                         </button>
 
@@ -2267,22 +2457,24 @@ export default function MTNDisbursement() {
                           className={`complaint-message-toggle-btn ${showComplaintBox ? "active" : ""}`}
                           onClick={() => setShowComplaintBox(!showComplaintBox)}
                         >
-                          <span className="btn-icon">💬</span>
+                          <ChatIcon />
                           <span>{showComplaintBox ? "Hide Message Box" : "Send a Message Instead"}</span>
                         </button>
 
-                        <button
-                          type="button"
-                          className="freeze-self-action-btn"
-                          onClick={() => {
-                            setActiveModal("freeze");
-                            setError("");
-                            setSecurityPin("");
-                          }}
-                        >
-                          <span className="btn-icon">🔒</span>
-                          <span>Freeze My Account</span>
-                        </button>
+                        {!walletFrozen && receipt?.decision !== "BLOCKED_BY_ACCOUNT_FREEZE" && (
+                          <button
+                            type="button"
+                            className="freeze-self-action-btn"
+                            onClick={() => {
+                              setActiveModal("freeze");
+                              setError("");
+                              setSecurityPin("");
+                            }}
+                          >
+                            <LockIcon />
+                            <span>Freeze My Account</span>
+                          </button>
+                        )}
                       </div>
 
                       {showComplaintBox && (
@@ -2535,6 +2727,61 @@ export default function MTNDisbursement() {
                     </>
                   )
                 )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL 4: INTERACTIVE PHONE CALL DIALER (SUPPORT 100)       */}
+      {/* ========================================================= */}
+      {activeCall && (
+        <div className="customer-call-overlay" role="dialog" aria-modal="true" aria-labelledby="active-call-title">
+          <div className="customer-call-card">
+            <div className="customer-call-header">
+              <span className="call-provider-tag">MTN MOMO HELPLINE · TOLL FREE</span>
+              <h3 id="active-call-title">Fraud & Security Desk</h3>
+              <p className="call-number-label">Dialing 100</p>
+            </div>
+
+            <div className={`customer-call-avatar ${activeCall.state}`}>
+              <div className="call-avatar-icon">
+                <PhoneIcon />
+              </div>
+              <span className="call-pulse-ring-1" />
+              <span className="call-pulse-ring-2" />
+            </div>
+
+            <div className="customer-call-status-box">
+              <p className="call-state-title">
+                {activeCall.state === "dialing" && "Dialing 100..."}
+                {activeCall.state === "ringing" && "Ringing customer support..."}
+                {activeCall.state === "connected" &&
+                  `Connected · ${String(Math.floor(activeCall.duration / 60)).padStart(2, "0")}:${String(
+                    activeCall.duration % 60
+                  ).padStart(2, "0")}`}
+              </p>
+
+              {activeCall.state === "connected" && (
+                <div className="call-agent-speech">
+                  <span className="agent-badge">Automated IVR Assistant</span>
+                  <p>
+                    "Welcome to MTN MoMo Fraud Prevention Desk. Your call regarding wallet {customerAccount?.customer_ref || senderNumber} has been logged. An operations analyst has been notified."
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="customer-call-controls">
+              <button
+                type="button"
+                className="customer-call-end-btn"
+                onClick={endActiveCall}
+                title="End phone call"
+              >
+                <PhoneIcon />
+                <span>End Call</span>
+              </button>
             </div>
           </div>
         </div>

@@ -62,10 +62,6 @@ export default function DashboardStats() {
       label: "Frozen Accounts",
       value: stats.frozen_accounts,
     },
-    {
-      label: "Resolved Cases",
-      value: stats.resolved_cases,
-    },
   ];
 
   return (

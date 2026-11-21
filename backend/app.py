@@ -2362,6 +2362,7 @@ def update_case(
         )
         events.publish("case", {"reason": "updated", "case_id": case_id})
         events.publish("audit", {"reason": "logged"})
+        events.publish("stats", {"reason": "case_updated"})
         return {
             "message": "Fraud case updated successfully.",
             "case_id": case_id,
@@ -2374,6 +2375,84 @@ def update_case(
     except Exception as error:
         logger.exception("Fraud case update failed")
         raise HTTPException(status_code=500, detail="Unable to update fraud case.") from error
+
+
+@app.post("/api/admin/fraud-cases/{case_id}/resolve")
+def resolve_fraud_case_endpoint(
+    case_id: int,
+    body: dict = Body(default={}),
+    current_user: dict = Depends(require_analyst),
+):
+    decision = body.get("analyst_decision") or body.get("decision") or "LEGITIMATE"
+    if decision not in ("LEGITIMATE", "FRAUD_CONFIRMED", "INCONCLUSIVE"):
+        decision = "LEGITIMATE"
+    notes = (
+        body.get("analyst_notes")
+        or body.get("notes")
+        or f"Case resolved as {decision} by {current_user.get('username', 'analyst')}."
+    )
+    try:
+        transaction_id = update_fraud_case(
+            case_id,
+            {
+                "case_status": "RESOLVED",
+                "analyst_decision": decision,
+                "analyst_notes": notes,
+            },
+        )
+        if transaction_id is None:
+            raise HTTPException(status_code=404, detail="Fraud case not found.")
+        create_audit_log(
+            transaction_id,
+            "FRAUD_CASE_RESOLVED",
+            current_user.get("username", "ANALYST"),
+            f"Case ID: {case_id}; Decision: {decision}; Notes: {notes}",
+        )
+        events.publish("case", {"reason": "resolved", "case_id": case_id})
+        events.publish("audit", {"reason": "logged"})
+        events.publish("stats", {"reason": "case_resolved"})
+        return {
+            "message": f"Case #{case_id} resolved successfully.",
+            "case_id": case_id,
+            "case_status": "RESOLVED",
+            "analyst_decision": decision,
+        }
+    except Exception as error:
+        logger.exception("Fraud case resolve endpoint failed")
+        raise HTTPException(status_code=500, detail="Unable to resolve fraud case.") from error
+
+
+@app.post("/api/admin/fraud-cases/{case_id}/reopen")
+def reopen_fraud_case_endpoint(
+    case_id: int,
+    current_user: dict = Depends(require_analyst),
+):
+    try:
+        transaction_id = update_fraud_case(
+            case_id,
+            {
+                "case_status": "INVESTIGATING",
+            },
+        )
+        if transaction_id is None:
+            raise HTTPException(status_code=404, detail="Fraud case not found.")
+        create_audit_log(
+            transaction_id,
+            "FRAUD_CASE_REOPENED",
+            current_user.get("username", "ANALYST"),
+            f"Case ID: {case_id}; Reopened by {current_user.get('username', 'analyst')}",
+        )
+        events.publish("case", {"reason": "reopened", "case_id": case_id})
+        events.publish("audit", {"reason": "logged"})
+        events.publish("stats", {"reason": "case_reopened"})
+        return {
+            "message": f"Case #{case_id} reopened for investigation.",
+            "case_id": case_id,
+            "case_status": "INVESTIGATING",
+        }
+    except Exception as error:
+        logger.exception("Fraud case reopen endpoint failed")
+        raise HTTPException(status_code=500, detail="Unable to reopen fraud case.") from error
 
 
 @app.post("/api/admin/fraud-cases/{case_id}/contact")

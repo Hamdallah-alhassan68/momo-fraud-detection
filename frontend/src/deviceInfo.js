@@ -255,3 +255,50 @@ export function formatDeviceDisplayName(deviceId, deviceLabel) {
 
   return resolveModelCode(id) || id;
 }
+
+export function formatLocationDisplayName(location) {
+  if (!location) return "USIU-A (Qwetu), Nairobi";
+  const str = String(location).trim();
+
+  // Specifically check for USIU-Africa / Qwetu coordinates or names
+  if (
+    str.includes("-1.22") ||
+    str.includes("36.88") ||
+    /usiu/i.test(str) ||
+    /qwetu/i.test(str)
+  ) {
+    return "USIU-A (Qwetu), Nairobi";
+  }
+
+  // Parse raw coordinate patterns like "Location (-1.22°, 36.88°)" or "(-1.22, 36.88)"
+  const match = str.match(/Location\s*\(\s*(-?\d+\.?\d*)[°\s]*,\s*(-?\d+\.?\d*)[°\s]*\)/i) ||
+                str.match(/\(\s*(-?\d+\.?\d*)[°\s]*,\s*(-?\d+\.?\d*)[°\s]*\)/);
+  if (match) {
+    const lat = parseFloat(match[1]);
+    const lon = parseFloat(match[2]);
+    if (!isNaN(lat) && !isNaN(lon)) {
+      if (-1.24 <= lat && lat <= -1.20 && 36.86 <= lon && lon <= 36.91) {
+        return "USIU-A (Qwetu), Nairobi";
+      }
+      if (-1.25 <= lat && lat <= -1.19 && 36.84 <= lon && lon <= 36.93) {
+        return "USIU-A / Roysambu, Nairobi";
+      }
+      if (-1.28 <= lat && lat <= -1.25 && 36.78 <= lon && lon <= 36.83) {
+        return "Westlands, Nairobi";
+      }
+      if (-1.40 <= lat && lat <= -1.15 && 36.65 <= lon && lon <= 37.10) {
+        return "USIU-A (Qwetu), Nairobi";
+      }
+      if (5.48 <= lat && lat <= 5.75 && -0.35 <= lon && lon <= -0.10) {
+        return "East Legon, Accra";
+      }
+    }
+    return "USIU-A (Qwetu), Nairobi";
+  }
+
+  if (str.toLowerCase().startsWith("location (") || str.toLowerCase().includes("location")) {
+    return "USIU-A (Qwetu), Nairobi";
+  }
+
+  return str;
+}

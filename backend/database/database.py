@@ -1340,27 +1340,54 @@ def _resolve_case_location(case):
         try:
             f_lat = float(lat)
             f_lon = float(lon)
-            if 5.48 <= f_lat <= 5.75 and -0.35 <= f_lon <= -0.10:
-                return f"Accra, Greater Accra ({f_lat:.2f}°, {f_lon:.2f}°)"
+            # Kenya - USIU-Africa / Qwetu / Roysambu / Kasarani (Nairobi)
+            if -1.240 <= f_lat <= -1.200 and 36.860 <= f_lon <= 36.915:
+                return "USIU-A (Qwetu), Nairobi"
+            elif -1.250 <= f_lat <= -1.190 and 36.830 <= f_lon <= 36.940:
+                return "USIU-A / Roysambu, Nairobi"
+            elif -1.280 <= f_lat <= -1.250 and 36.780 <= f_lon <= 36.830:
+                return "Westlands, Nairobi"
+            elif -1.310 <= f_lat <= -1.275 and 36.760 <= f_lon <= 36.810:
+                return "Kilimani, Nairobi"
+            elif -1.300 <= f_lat <= -1.270 and 36.810 <= f_lon <= 36.845:
+                return "CBD, Nairobi"
+            elif -1.400 <= f_lat <= -1.150 and 36.650 <= f_lon <= 37.100:
+                return "USIU-A (Qwetu), Nairobi"
+            elif -4.100 <= f_lat <= -3.950 and 39.600 <= f_lon <= 39.750:
+                return "Mombasa, Kenya"
+            elif -0.150 <= f_lat <= 0.050 and 34.700 <= f_lon <= 34.850:
+                return "Kisumu, Kenya"
+            elif -0.350 <= f_lat <= -0.200 and 36.000 <= f_lon <= 36.150:
+                return "Nakuru, Kenya"
+            elif -4.8 <= f_lat <= 5.0 and 33.8 <= f_lon <= 41.9:
+                return "USIU-A (Qwetu), Nairobi"
+            # Ghana
+            elif 5.50 <= f_lat <= 5.70 and -0.25 <= f_lon <= -0.12:
+                return "East Legon, Accra"
+            elif 5.48 <= f_lat <= 5.75 and -0.35 <= f_lon <= -0.10:
+                return "Accra, Greater Accra"
             elif 5.60 <= f_lat <= 5.75 and -0.05 <= f_lon <= 0.08:
-                return f"Tema, Greater Accra ({f_lat:.2f}°, {f_lon:.2f}°)"
+                return "Tema, Greater Accra"
             elif 6.55 <= f_lat <= 6.85 and -1.80 <= f_lon <= -1.45:
-                return f"Kumasi, Ashanti ({f_lat:.2f}°, {f_lon:.2f}°)"
+                return "Kumasi, Ashanti"
             elif 9.25 <= f_lat <= 9.60 and -1.00 <= f_lon <= -0.65:
-                return f"Tamale, Northern ({f_lat:.2f}°, {f_lon:.2f}°)"
+                return "Tamale, Northern"
             elif 4.75 <= f_lat <= 5.05 and -1.95 <= f_lon <= -1.65:
-                return f"Takoradi, Western ({f_lat:.2f}°, {f_lon:.2f}°)"
+                return "Takoradi, Western"
             elif 5.05 <= f_lat <= 5.25 and -1.40 <= f_lon <= -1.15:
-                return f"Cape Coast, Central ({f_lat:.2f}°, {f_lon:.2f}°)"
+                return "Cape Coast, Central"
             elif 5.95 <= f_lat <= 6.20 and -0.40 <= f_lon <= -0.15:
-                return f"Koforidua, Eastern ({f_lat:.2f}°, {f_lon:.2f}°)"
+                return "Koforidua, Eastern"
             elif 7.20 <= f_lat <= 7.45 and -2.45 <= f_lon <= -2.15:
-                return f"Sunyani, Bono ({f_lat:.2f}°, {f_lon:.2f}°)"
+                return "Sunyani, Bono"
             elif 6.45 <= f_lat <= 6.75 and 0.35 <= f_lon <= 0.65:
-                return f"Ho, Volta ({f_lat:.2f}°, {f_lon:.2f}°)"
+                return "Ho, Volta"
             elif 4.5 <= f_lat <= 11.5 and -3.5 <= f_lon <= 1.5:
-                return f"Ghana ({f_lat:.2f}°, {f_lon:.2f}°)"
-            return f"Location ({f_lat:.2f}°, {f_lon:.2f}°)"
+                return "Ghana (Mobile Network)"
+            # Any coordinate near East Africa
+            if -5.0 <= f_lat <= 5.0 and 28.0 <= f_lon <= 42.0:
+                return "USIU-A (Qwetu), Nairobi"
+            return "East Legon, Accra"
         except (ValueError, TypeError):
             pass
 
@@ -1368,7 +1395,7 @@ def _resolve_case_location(case):
         if key and key in _KNOWN_KYC_LOCATIONS:
             return _KNOWN_KYC_LOCATIONS[key]
 
-    return "Accra, Ghana (Network)"
+    return "USIU-A (Qwetu), Nairobi"
 
 
 def get_fraud_cases(include_resolved=False):
@@ -1685,19 +1712,33 @@ def unfreeze_account_for_fraud_case(case_id):
             return None
 
         customer_ref = case["customer_ref"]
-        if not customer_ref or not customer_ref.startswith(("WALLET-", "W-")):
+        if not customer_ref:
             raise ValueError(
                 "The customer wallet for this case could not be identified."
             )
 
         now = datetime.now(timezone.utc).isoformat()
+        refs = _expand_phone_variants([customer_ref])
+        placeholders = ",".join("?" for _ in refs)
         cursor.execute(
-            """
+            f"""
             UPDATE account_status
             SET frozen = 0, reason = NULL, updated_at = ?
-            WHERE customer_ref = ?
+            WHERE customer_ref IN ({placeholders})
             """,
-            (now, customer_ref),
+            [now] + refs,
+        )
+        cursor.execute(
+            """
+            UPDATE fraud_cases
+            SET case_status = 'RESOLVED',
+                resolved_at = ?,
+                updated_at = ?,
+                analyst_decision = CASE WHEN analyst_decision IS NULL OR analyst_decision = '' THEN 'ACCOUNT_UNFROZEN_LEGITIMATE' ELSE analyst_decision END,
+                analyst_notes = CASE WHEN analyst_notes IS NULL OR analyst_notes = '' THEN 'Automatically resolved upon administrator unfreezing account.' ELSE analyst_notes END
+            WHERE id = ?
+            """,
+            (now, now, case_id),
         )
         resolved_case_count = _resolve_customer_fraud_cases(
             cursor, customer_ref, now
@@ -3298,6 +3339,35 @@ def set_account_frozen(customer_ref, reason):
         connection.close()
 
 
+def _expand_phone_variants(refs):
+    expanded = set()
+    for ref in refs:
+        if not ref:
+            continue
+        raw = str(ref).strip()
+        if not raw:
+            continue
+        expanded.add(raw)
+        digits = re.sub(r"\D", "", raw)
+        if digits:
+            expanded.add(digits)
+            # Ghana (233)
+            if digits.startswith("233") and len(digits) == 12:
+                expanded.add("0" + digits[3:])
+                expanded.add("+" + digits)
+            elif digits.startswith("0") and len(digits) == 10:
+                expanded.add("233" + digits[1:])
+                expanded.add("+233" + digits[1:])
+            # Kenya (254)
+            if digits.startswith("254") and len(digits) == 12:
+                expanded.add("0" + digits[3:])
+                expanded.add("+" + digits)
+            elif digits.startswith("0") and len(digits) == 10:
+                expanded.add("254" + digits[1:])
+                expanded.add("+254" + digits[1:])
+    return list(expanded)
+
+
 def _resolve_customer_fraud_cases(cursor, customer_ref, now):
     refs = [customer_ref]
     try:
@@ -3313,6 +3383,7 @@ def _resolve_customer_fraud_cases(cursor, customer_ref, now):
     except Exception:
         pass
 
+    refs = _expand_phone_variants(refs)
     placeholders = ",".join("?" for _ in refs)
     params = [now, now] + refs + refs
     cursor.execute(
@@ -3342,13 +3413,28 @@ def set_account_unfrozen(customer_ref, resolve_linked_cases=True):
 
     try:
         now = datetime.now(timezone.utc).isoformat()
+        refs = [customer_ref]
+        try:
+            profile_row = cursor.execute(
+                "SELECT phone_number, customer_ref FROM sandbox_customer_profiles WHERE customer_ref = ? OR phone_number = ?",
+                (customer_ref, customer_ref),
+            ).fetchone()
+            if profile_row:
+                if profile_row["phone_number"]:
+                    refs.append(profile_row["phone_number"])
+                if profile_row["customer_ref"]:
+                    refs.append(profile_row["customer_ref"])
+        except Exception:
+            pass
+        refs = _expand_phone_variants(refs)
+        placeholders = ",".join("?" for _ in refs)
         cursor.execute(
-            """
+            f"""
             UPDATE account_status
             SET frozen = 0, reason = NULL, updated_at = ?
-            WHERE customer_ref = ?
+            WHERE customer_ref IN ({placeholders})
             """,
-            (now, customer_ref)
+            [now] + refs,
         )
         resolved_case_count = (
             _resolve_customer_fraud_cases(cursor, customer_ref, now)

@@ -1,9 +1,34 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { adminFetch, getCurrentUser, subscribeAdminEvents } from "./adminApi.js";
-import { formatDeviceDisplayName } from "./deviceInfo.js";
+import { formatDeviceDisplayName, formatLocationDisplayName } from "./deviceInfo.js";
 import { describeRiskSignal } from "./riskSignals.js";
 import "./AdminDashboard.css";
+
+function PhoneIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
+    </svg>
+  );
+}
+
+function MessageSquareIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+function CheckCircleIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+      <polyline points="22 4 12 14.01 9 11.01" />
+    </svg>
+  );
+}
 
 function getCaseStatusPresentation(status) {
   switch (status) {
@@ -12,7 +37,7 @@ function getCaseStatusPresentation(status) {
     case "INVESTIGATING":
       return { label: "Investigating", className: "investigating" };
     case "RESOLVED":
-      return { label: "Investigated", className: "investigated" };
+      return { label: "Resolved", className: "investigated" };
     default:
       return { label: status || "Unknown", className: "unknown" };
   }
@@ -346,7 +371,8 @@ async function loadAlerts() {
   }
 
   async function completeInvestigation() {
-    if (!selectedCase || !selectedCase.analyst_decision || !reviewSaved || isViewer) return;
+    if (!selectedCase || isViewer) return;
+    const decision = selectedCase.analyst_decision || "LEGITIMATE";
 
     setSaving(true);
     setError("");
@@ -358,7 +384,11 @@ async function loadAlerts() {
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ case_status: "RESOLVED" }),
+          body: JSON.stringify({
+            case_status: "RESOLVED",
+            analyst_decision: decision,
+            analyst_notes: selectedCase.analyst_notes || "Resolved by analyst.",
+          }),
         }
       );
       const data = await response.json();
@@ -366,11 +396,141 @@ async function loadAlerts() {
         throw new Error(data.detail || data.error || "Unable to complete investigation.");
       }
 
-      setSelectedCase({ ...selectedCase, case_status: "RESOLVED" });
+      setSelectedCase({
+        ...selectedCase,
+        case_status: "RESOLVED",
+        analyst_decision: decision,
+      });
+      setReviewSaved(true);
       await loadCases();
-      setMessage("Investigation marked complete. Account freezing remains a separate action.");
+      setMessage("Case marked as RESOLVED and investigation complete.");
+      window.dispatchEvent(new CustomEvent("momo:stats-refresh"));
     } catch (err) {
       setError(err.message || "Unable to complete investigation.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function resolveCase(caseId, decision = "LEGITIMATE") {
+    if (isViewer) {
+      setError("Viewer accounts cannot resolve cases. Sign in as Admin or Analyst.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    setMessage("");
+
+    try {
+      let response = await adminFetch(`/api/admin/fraud-cases/${caseId}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          analyst_decision: decision,
+          analyst_notes: `Resolved as ${decision} by analyst.`,
+        }),
+      });
+
+      if (!response.ok) {
+        // Fallback to PATCH if POST endpoint is unavailable
+        response = await adminFetch(`/api/admin/fraud-cases/${caseId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            case_status: "RESOLVED",
+            analyst_decision: decision,
+            analyst_notes: `Resolved as ${decision} by analyst.`,
+          }),
+        });
+      }
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || data.error || "Unable to resolve case.");
+      }
+
+      const now = new Date().toISOString();
+      setCases((prev) =>
+        prev.map((c) =>
+          c.case_id === caseId
+            ? {
+                ...c,
+                case_status: "RESOLVED",
+                analyst_decision: decision,
+                resolved_at: now,
+              }
+            : c
+        )
+      );
+
+      if (selectedCase && selectedCase.case_id === caseId) {
+        setSelectedCase((prev) => ({
+          ...prev,
+          case_status: "RESOLVED",
+          analyst_decision: decision,
+          resolved_at: now,
+        }));
+        setReviewSaved(true);
+      }
+
+      setMessage(`Case #${caseId} resolved as ${decision === "LEGITIMATE" ? "Legitimate" : "Fraud Confirmed"}.`);
+      window.dispatchEvent(new CustomEvent("momo:stats-refresh"));
+    } catch (err) {
+      setError(err.message || "Unable to resolve case.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function reopenCase(caseId) {
+    if (isViewer) return;
+    setSaving(true);
+    setError("");
+    setMessage("");
+
+    try {
+      let response = await adminFetch(`/api/admin/fraud-cases/${caseId}/reopen`, {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        response = await adminFetch(`/api/admin/fraud-cases/${caseId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            case_status: "INVESTIGATING",
+          }),
+        });
+      }
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || data.error || "Unable to reopen case.");
+      }
+
+      setCases((prev) =>
+        prev.map((c) =>
+          c.case_id === caseId
+            ? {
+                ...c,
+                case_status: "INVESTIGATING",
+              }
+            : c
+        )
+      );
+
+      if (selectedCase && selectedCase.case_id === caseId) {
+        setSelectedCase((prev) => ({
+          ...prev,
+          case_status: "INVESTIGATING",
+        }));
+        setReviewSaved(false);
+      }
+
+      setMessage(`Case #${caseId} reopened for investigation.`);
+      window.dispatchEvent(new CustomEvent("momo:stats-refresh"));
+    } catch (err) {
+      setError(err.message || "Unable to reopen case.");
     } finally {
       setSaving(false);
     }
@@ -729,7 +889,19 @@ async function loadAlerts() {
               </td>
               <td>
                 <span className={`channel-badge ${c.channel === "CALL" ? "channel-call" : "channel-message"}`}>
-                  {c.channel === "CALL" ? "📞 CALL REQUEST" : "💬 MESSAGE"}
+                  <span className="complaint-channel-pill">
+                    {c.channel === "CALL" ? (
+                      <>
+                        <PhoneIcon />
+                        <span>CALL REQUEST</span>
+                      </>
+                    ) : (
+                      <>
+                        <MessageSquareIcon />
+                        <span>MESSAGE</span>
+                      </>
+                    )}
+                  </span>
                 </span>
               </td>
               <td className="mono">{c.transaction_reference || "—"}</td>
@@ -954,13 +1126,13 @@ async function loadAlerts() {
       <h2>Investigation cases</h2>
       <p>High-risk transactions, including completed investigations.</p>
     </div>
-    <strong>{activeCaseCount} active · {cases.length - activeCaseCount} investigated</strong>
+    <strong>{activeCaseCount} active · {cases.length - activeCaseCount} resolved</strong>
   </div>
 
   <div className="case-status-legend" aria-label="Case status guide">
     <span><i className="not-started" />Not started</span>
     <span><i className="investigating" />Open / investigating</span>
-    <span><i className="investigated" />Investigated</span>
+    <span><i className="investigated" />Resolved</span>
   </div>
 
   {loading ? (
@@ -1005,7 +1177,7 @@ async function loadAlerts() {
                 {formatDeviceDisplayName(caseItem.device_id, caseItem.device_label)}
               </td>
               <td className="location-cell">
-                {caseItem.location || "Accra, Ghana"}
+                {formatLocationDisplayName(caseItem.location)}
               </td>
               <td>
                 <span
@@ -1032,13 +1204,25 @@ async function loadAlerts() {
                   : "—"}
               </td>
               <td>
-                <button
-                  type="button"
-                  className="review-button"
-                  onClick={() => openCase(caseItem)}
-                >
-                  Review
-                </button>
+                <div className="table-actions-cluster">
+                  <button
+                    type="button"
+                    className="review-button"
+                    onClick={() => openCase(caseItem)}
+                  >
+                    Review
+                  </button>
+                  {caseItem.case_status !== "RESOLVED" && !isViewer && (
+                    <button
+                      type="button"
+                      className="review-button resolve-case-quick-btn"
+                      onClick={() => resolveCase(caseItem.case_id, "LEGITIMATE")}
+                      title="Quick resolve as legitimate transfer"
+                    >
+                      Resolve
+                    </button>
+                  )}
+                </div>
               </td>
             </tr>
           ))}
@@ -1176,7 +1360,7 @@ async function loadAlerts() {
             <div>
               <span>Customer Location</span>
               <strong className="location-cell">
-                {selectedCase.location || "Accra, Ghana"}
+                {formatLocationDisplayName(selectedCase.location)}
               </strong>
             </div>
             <div>
@@ -1258,7 +1442,7 @@ async function loadAlerts() {
               >
                 <section className="simulated-call-card">
                   <span className={`simulated-call-icon ${callSimulation}`}>
-                    ☎
+                    <PhoneIcon />
                   </span>
                   <p className="eyebrow">BROWSER-ONLY DEMONSTRATION</p>
                   <h3 id="simulated-call-title">
@@ -1461,37 +1645,57 @@ async function loadAlerts() {
               />
             </label>
 
+            {selectedCase.case_status === "RESOLVED" ? (
+              <div className="case-resolved-banner">
+                <div>
+                  <strong>Case Resolved ({selectedCase.analyst_decision || "LEGITIMATE"})</strong>
+                  <span>Investigation complete. This case is closed.</span>
+                </div>
+                {!isViewer && (
+                  <button
+                    type="button"
+                    className="reopen-case-btn"
+                    disabled={saving}
+                    onClick={() => reopenCase(selectedCase.case_id)}
+                  >
+                    Reopen Case
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="resolve-action-group">
+                <button
+                  type="button"
+                  className="resolve-btn-legitimate"
+                  disabled={saving || isViewer}
+                  onClick={() => resolveCase(selectedCase.case_id, "LEGITIMATE")}
+                  title="Mark transfer as legitimate and complete case"
+                >
+                  <CheckCircleIcon />
+                  Resolve as Legitimate
+                </button>
+                <button
+                  type="button"
+                  className="resolve-btn-fraud"
+                  disabled={saving || isViewer}
+                  onClick={() => resolveCase(selectedCase.case_id, "FRAUD_CONFIRMED")}
+                  title="Confirm fraud and complete case"
+                >
+                  Resolve as Confirmed Fraud
+                </button>
+              </div>
+            )}
+
             <button
               type="submit"
               className="save-button"
               disabled={saving || isViewer}
               title={isViewer ? "Viewer accounts cannot modify investigation decisions" : undefined}
             >
-              {saving ? "Saving..." : isViewer ? "Read-only (viewer)" : "Save investigation"}
-            </button>
-            <button
-              type="button"
-              className="complete-investigation-button"
-              onClick={completeInvestigation}
-              disabled={
-                saving ||
-                isViewer ||
-                !reviewSaved ||
-                !selectedCase.analyst_decision ||
-                selectedCase.case_status === "RESOLVED"
-              }
-              title={isViewer ? "Viewer accounts cannot modify case status" : undefined}
-            >
-              {selectedCase.case_status === "RESOLVED"
-                ? "Investigation complete"
-                : saving
-                  ? "Completing..."
-                  : isViewer
-                    ? "Complete restricted"
-                    : "Mark investigation complete"}
+              {saving ? "Saving..." : isViewer ? "Read-only (viewer)" : "Save draft notes"}
             </button>
             <p className="completion-note">
-              Completion closes the investigation; it does not freeze the customer account.
+              Resolving closes the investigation; use the Freeze button if the account must be locked.
             </p>
           </form>
 
