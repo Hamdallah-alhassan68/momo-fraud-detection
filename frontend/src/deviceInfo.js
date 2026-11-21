@@ -257,47 +257,66 @@ export function formatDeviceDisplayName(deviceId, deviceLabel) {
 }
 
 export function formatLocationDisplayName(location) {
-  if (!location) return "USIU-A (Qwetu), Nairobi";
+  if (!location) return "—";
   const str = String(location).trim();
+  if (!str || str === "null" || str === "undefined") return "—";
 
-  // Specifically check for USIU-Africa / Qwetu coordinates or names
-  if (
-    str.includes("-1.22") ||
-    str.includes("36.88") ||
-    /usiu/i.test(str) ||
-    /qwetu/i.test(str)
-  ) {
-    return "USIU-A (Qwetu), Nairobi";
+  // If the location is already a human-readable address/place name without "Location (", use it directly!
+  const hasCoordinatePattern =
+    str.match(/Location\s*\(\s*(-?\d+\.?\d*)[°\s]*,\s*(-?\d+\.?\d*)[°\s]*\)/i) ||
+    str.match(/\(\s*(-?\d+\.?\d*)[°\s]*,\s*(-?\d+\.?\d*)[°\s]*\)/);
+
+  if (!hasCoordinatePattern && !str.toLowerCase().startsWith("location")) {
+    return str;
   }
 
   // Parse raw coordinate patterns like "Location (-1.22°, 36.88°)" or "(-1.22, 36.88)"
-  const match = str.match(/Location\s*\(\s*(-?\d+\.?\d*)[°\s]*,\s*(-?\d+\.?\d*)[°\s]*\)/i) ||
-                str.match(/\(\s*(-?\d+\.?\d*)[°\s]*,\s*(-?\d+\.?\d*)[°\s]*\)/);
+  const match = hasCoordinatePattern;
   if (match) {
     const lat = parseFloat(match[1]);
     const lon = parseFloat(match[2]);
     if (!isNaN(lat) && !isNaN(lon)) {
-      if (-1.24 <= lat && lat <= -1.20 && 36.86 <= lon && lon <= 36.91) {
-        return "USIU-A (Qwetu), Nairobi";
+      // Kenya / Nairobi localities
+      if (-1.235 <= lat && lat <= -1.210 && 36.870 <= lon && lon <= 36.905) {
+        return "Roysambu, Kasarani, Nairobi";
       }
-      if (-1.25 <= lat && lat <= -1.19 && 36.84 <= lon && lon <= 36.93) {
-        return "USIU-A / Roysambu, Nairobi";
+      if (-1.255 <= lat && lat <= -1.185 && 36.830 <= lon && lon <= 36.940) {
+        return "Kasarani, Nairobi";
       }
-      if (-1.28 <= lat && lat <= -1.25 && 36.78 <= lon && lon <= 36.83) {
+      if (-1.280 <= lat && lat <= -1.250 && 36.780 <= lon && lon <= 36.830) {
         return "Westlands, Nairobi";
       }
-      if (-1.40 <= lat && lat <= -1.15 && 36.65 <= lon && lon <= 37.10) {
-        return "USIU-A (Qwetu), Nairobi";
+      if (-1.310 <= lat && lat <= -1.275 && 36.760 <= lon && lon <= 36.810) {
+        return "Kilimani, Nairobi";
       }
-      if (5.48 <= lat && lat <= 5.75 && -0.35 <= lon && lon <= -0.10) {
+      if (-1.300 <= lat && lat <= -1.270 && 36.810 <= lon && lon <= 36.845) {
+        return "CBD, Nairobi";
+      }
+      if (-1.400 <= lat && lat <= -1.150 && 36.650 <= lon && lon <= 37.100) {
+        return "Nairobi City, Kenya";
+      }
+      if (-4.100 <= lat && lat <= -3.950 && 39.600 <= lon && lon <= 39.750) {
+        return "Mombasa, Kenya";
+      }
+      if (-0.150 <= lat && lat <= 0.050 && 34.700 <= lon && lon <= 34.850) {
+        return "Kisumu, Kenya";
+      }
+      // Ghana localities
+      if (5.50 <= lat && lat <= 5.70 && -0.25 <= lon && lon <= -0.12) {
         return "East Legon, Accra";
       }
+      if (5.48 <= lat && lat <= 5.75 && -0.35 <= lon && lon <= -0.10) {
+        return "Accra, Greater Accra";
+      }
+      if (5.60 <= lat && lat <= 5.75 && -0.05 <= lon && lon <= 0.08) {
+        return "Tema, Greater Accra";
+      }
+      if (6.55 <= lat && lat <= 6.85 && -1.80 <= lon && lon <= -1.45) {
+        return "Kumasi, Ashanti";
+      }
+      // Other coordinates: format cleanly with degrees
+      return `${lat.toFixed(3)}°, ${lon.toFixed(3)}°`;
     }
-    return "USIU-A (Qwetu), Nairobi";
-  }
-
-  if (str.toLowerCase().startsWith("location (") || str.toLowerCase().includes("location")) {
-    return "USIU-A (Qwetu), Nairobi";
   }
 
   return str;

@@ -412,6 +412,43 @@ export default function MTNDisbursement() {
     }
   }, []);
 
+  async function reverseGeocodeCoords(lat, lon) {
+    try {
+      const resp = await fetch(
+        `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`
+      );
+      if (resp.ok) {
+        const data = await resp.json();
+        const admin = data.localityInfo?.administrative || [];
+        let district = "";
+        for (const item of admin) {
+          const desc = (item.description || "").toLowerCase();
+          if (
+            desc.includes("sub-count") ||
+            desc.includes("division") ||
+            [6, 7, 8].includes(item.adminLevel)
+          ) {
+            district = (item.name || "").replace(
+              / division| location| sublocation/gi,
+              "",
+            );
+            break;
+          }
+        }
+        const city =
+          data.city || data.locality || data.principalSubdivision || "";
+        const country = data.countryName || "";
+        const parts = Array.from(
+          new Set([district, city, country].filter(Boolean)),
+        );
+        if (parts.length > 0) return parts.join(", ");
+      }
+    } catch {
+      // offline or network timeout fallback
+    }
+    return null;
+  }
+
   function requestDeviceLocation() {
     if (!navigator.geolocation) {
       setLocationStatus("unavailable");
@@ -420,14 +457,21 @@ export default function MTNDisbursement() {
     setLocationStatus("requesting");
     return new Promise((resolve) => {
       navigator.geolocation.getCurrentPosition(
-        (position) => {
+        async (position) => {
+          const rawLat = position.coords.latitude;
+          const rawLon = position.coords.longitude;
           const coordinates = {
-            latitude: Number(position.coords.latitude.toFixed(2)),
-            longitude: Number(position.coords.longitude.toFixed(2)),
+            latitude: Number(rawLat.toFixed(5)),
+            longitude: Number(rawLon.toFixed(5)),
           };
+          const locName = await reverseGeocodeCoords(rawLat, rawLon);
+          if (locName) {
+            coordinates.location_name = locName;
+          }
           setTelemetry((current) => ({
             ...current,
             gps_coordinates: coordinates,
+            location_name: locName || current.location_name,
           }));
           setLocationUpdatedAt(Date.now());
           setLocationStatus("granted");
@@ -437,6 +481,7 @@ export default function MTNDisbursement() {
           setTelemetry((current) => ({
             ...current,
             gps_coordinates: null,
+            location_name: null,
           }));
           setLocationStatus(
             error.code === error.PERMISSION_DENIED ? "denied" : "unavailable",
@@ -593,6 +638,7 @@ export default function MTNDisbursement() {
             ...(location && {
               location_latitude: location.latitude,
               location_longitude: location.longitude,
+              location_name: location.location_name || telemetry.location_name,
             }),
           }),
         },
@@ -720,6 +766,9 @@ export default function MTNDisbursement() {
       if (location) {
         payload.location_latitude = location.latitude;
         payload.location_longitude = location.longitude;
+        if (location.location_name || telemetry.location_name) {
+          payload.location_name = location.location_name || telemetry.location_name;
+        }
       }
 
       const res = await fetch(`${API_URL}/api/momo/transaction/initiate`, {
@@ -1128,11 +1177,6 @@ export default function MTNDisbursement() {
         state: "dialing",
         duration: 0,
       });
-      try {
-        window.location.href = "tel:100";
-      } catch {
-        // Native href fallback
-      }
     }
     const message =
       complaintText.trim() ||
@@ -1295,8 +1339,8 @@ export default function MTNDisbursement() {
               </div>
             </div>
 
-            {/* 4 Circular Action Buttons */}
-            <div className="quick-actions-bar">
+            {/* 5 Circular Action Buttons */}
+            <div className="quick-actions-bar quick-actions-5-bar">
               <button
                 type="button"
                 className={`quick-action-unit ${activeModal === "send" ? "selected" : ""}`}
@@ -1309,6 +1353,22 @@ export default function MTNDisbursement() {
                   <SendIcon />
                 </div>
                 <span className="action-name">Send MoMo</span>
+              </button>
+
+              <button
+                type="button"
+                className={`quick-action-unit ${activeModal === "freeze" ? "selected" : ""} ${walletFrozen ? "action-danger" : ""}`}
+                onClick={() => {
+                  setError("");
+                  setSecurityPin("");
+                  setActiveModal("freeze");
+                }}
+                title={walletFrozen ? "Wallet is Frozen - Manage Freeze" : "Customer Self-Freeze"}
+              >
+                <div className={`action-circle ${walletFrozen ? "action-circle-danger" : "action-circle-security"}`}>
+                  <LockIcon />
+                </div>
+                <span className="action-name">{walletFrozen ? "Frozen" : "Freeze"}</span>
               </button>
 
               <button
@@ -1355,56 +1415,117 @@ export default function MTNDisbursement() {
 
             {/* App Scrollable Content */}
             <div className="phone-body-content">
+              {!walletFrozen && (
+                <div className="customer-security-guard-card">
+                  <div className="guard-card-left">
+                    <div className="guard-icon-wrap">
+                      <LockIcon />
+                    </div>
+                    <div className="guard-text-wrap">
+                      <div className="guard-title-row">
+                        <strong>Customer Self-Freeze</strong>
+                        <span className="guard-badge-active">SECURITY</span>
+                      </div>
+                      <p>
+                        Lost your device or suspect fraud? Lock your wallet
+                        instantly to prevent unauthorized outgoing transfers.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="guard-freeze-cta-btn"
+                    onClick={() => {
+                      setError("");
+                      setSecurityPin("");
+                      setActiveModal("freeze");
+                    }}
+                  >
+                    <LockIcon />
+                    <span>Freeze Wallet</span>
+                  </button>
+                </div>
+              )}
+
               {walletFrozen && (
-                <div className="status-banner banner-danger">
-                  <LockIcon />
-                  <div>
-                    <strong>Wallet Frozen</strong>
-                    <p>
-                      Reason:{" "}
-                      {getFreezeReasonLabel(
-                        customerAccount?.account_frozen_reason,
-                      )}
-                    </p>
-                    {freezeMessage && <p>{freezeMessage}</p>}
-                    <div className="frozen-banner-actions-cluster">
-                      <a
-                        href="tel:100"
-                        className="frozen-banner-call-btn"
-                        onClick={() => submitCustomerComplaint("CALL")}
-                      >
+                <div className="status-banner banner-danger wallet-frozen-card">
+                  <div className="frozen-banner-top">
+                    <div className="frozen-badge-icon">
+                      <LockIcon />
+                    </div>
+                    <div className="frozen-banner-heading">
+                      <div className="frozen-title-row">
+                        <strong>Wallet Frozen</strong>
+                        <span className="frozen-status-pill">LOCKED</span>
+                      </div>
+                      <p className="frozen-reason-text">
+                        Reason:{" "}
+                        {getFreezeReasonLabel(
+                          customerAccount?.account_frozen_reason,
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  {freezeMessage && (
+                    <div className="frozen-notice-alert">{freezeMessage}</div>
+                  )}
+
+                  <div className="frozen-banner-actions-cluster">
+                    <button
+                      type="button"
+                      className="frozen-banner-call-btn"
+                      onClick={() => submitCustomerComplaint("CALL")}
+                      title="Call MTN Support 100"
+                    >
+                      <div className="call-btn-icon-bubble">
                         <PhoneIcon />
-                        <span>Call Support to Unfreeze (100)</span>
-                      </a>
-                      {customerAccount?.account_frozen_reason ===
-                        "FROZEN_BY_CUSTOMER" && (
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={() => {
-                            setError("");
-                            setSecurityPin("");
-                            setActiveModal("freeze");
-                          }}
-                        >
-                          Unfreeze with PIN
-                        </button>
-                      )}
+                      </div>
+                      <div className="call-btn-content">
+                        <div className="call-btn-primary-line">
+                          <span className="call-btn-action-label">
+                            Call Support (100)
+                          </span>
+                          <span className="call-btn-badge">Toll-Free</span>
+                        </div>
+                        <span className="call-btn-sub-label">
+                          Instant connect with MTN Fraud Desk
+                        </span>
+                      </div>
+                    </button>
+
+                    {customerAccount?.account_frozen_reason ===
+                      "FROZEN_BY_CUSTOMER" && (
                       <button
                         type="button"
-                        className="text-button"
-                        disabled={unfreezeRequestPending}
+                        className="frozen-secondary-btn frozen-unfreeze-btn"
                         onClick={() => {
                           setError("");
-                          setUnfreezeRequestNote("");
+                          setSecurityPin("");
                           setActiveModal("freeze");
                         }}
                       >
-                        {unfreezeRequestPending
-                          ? "Admin review requested"
-                          : "Send dispute message to Admin"}
+                        <ShieldIcon />
+                        <span>Unfreeze with Wallet PIN</span>
                       </button>
-                    </div>
+                    )}
+
+                    <button
+                      type="button"
+                      className="frozen-secondary-btn frozen-dispute-btn"
+                      disabled={unfreezeRequestPending}
+                      onClick={() => {
+                        setError("");
+                        setUnfreezeRequestNote("");
+                        setActiveModal("freeze");
+                      }}
+                    >
+                      <span>
+                        {unfreezeRequestPending
+                          ? "Dispute Pending Admin Review"
+                          : "Send Dispute Message to Admin"}
+                      </span>
+                    </button>
                   </div>
                 </div>
               )}

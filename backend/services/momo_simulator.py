@@ -439,6 +439,7 @@ def initiate_transaction(
     location_longitude=None,
     otp_sms_sender: Callable[[str, str, dict], bool] | None = None,
     device_label=None,
+    location_name=None,
 ):
     """Start a MoMo transaction; returns a session awaiting PIN/OTP."""
     customer = _ensure_customer(customer_ref)
@@ -568,6 +569,7 @@ def initiate_transaction(
         location_longitude=location[1] if location else None,
         otp_expires_at=otp_expires_at,
         device_label=device_label,
+        location_name=location_name,
     )
 
     message = (
@@ -1011,6 +1013,8 @@ def verify_transaction(
     }
     if location:
         transaction["location_latitude"], transaction["location_longitude"] = location
+    if session.get("location_name"):
+        transaction["location_name"] = session["location_name"]
 
     assessment = fraud_detector.assess_transaction(
         transaction, dest_previous_count

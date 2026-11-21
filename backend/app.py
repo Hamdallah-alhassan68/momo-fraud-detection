@@ -806,6 +806,7 @@ def momo_customer_register(
             location_longitude=location[1] if location else None,
             trusted=True,
             location_consent=body.get("location_consent") is True,
+            location_name=str(body.get("location_name") or "").strip() or None,
         )
     except INTEGRITY_ERRORS as error:
         raise HTTPException(
@@ -1808,6 +1809,7 @@ def momo_transaction_initiate(
             ),
             live_mtn=live_mtn,
             otp_sms_sender=send_transaction_otp_sms,
+            location_name=str(body.get("location_name") or "").strip() or None,
         )
         if is_customer_session:
             record_customer_security_signal(
@@ -1819,6 +1821,7 @@ def momo_transaction_initiate(
                 location_latitude=location[0] if location else None,
                 location_longitude=location[1] if location else None,
                 location_consent=body.get("location_consent") is True,
+                location_name=str(body.get("location_name") or "").strip() or None,
             )
             for private_signal in (
                 "ip_address",

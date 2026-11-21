@@ -781,8 +781,11 @@ def initialize_database():
     _ensure_column(connection, "transactions", "mtn_financial_id", "TEXT")
     _ensure_column(connection, "transactions", "location_latitude", "REAL")
     _ensure_column(connection, "transactions", "location_longitude", "REAL")
+    _ensure_column(connection, "transactions", "location_name", "TEXT")
     _ensure_column(connection, "momo_sessions", "location_latitude", "REAL")
     _ensure_column(connection, "momo_sessions", "location_longitude", "REAL")
+    _ensure_column(connection, "momo_sessions", "location_name", "TEXT")
+    _ensure_column(connection, "customer_security_signals", "location_name", "TEXT")
     _ensure_column(connection, "momo_sessions", "risk_signals", "TEXT")
     _ensure_column(connection, "momo_sessions", "assessment_reasons", "TEXT")
     _ensure_column(connection, "momo_sessions", "otp_expires_at", "TEXT")
@@ -988,9 +991,10 @@ def create_transaction(transaction):
                 mtn_financial_id,
                 location_latitude,
                 location_longitude,
-                device_label
+                device_label,
+                location_name
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             """,
             (
@@ -1035,7 +1039,8 @@ def create_transaction(transaction):
                 transaction.get("mtn_financial_id"),
                 transaction.get("location_latitude"),
                 transaction.get("location_longitude"),
-                transaction.get("device_label")
+                transaction.get("device_label"),
+                transaction.get("location_name")
             )
         )
 
@@ -1330,21 +1335,30 @@ _KNOWN_KYC_LOCATIONS = {
     "0554433221": "Lapaz, Accra",
     "WALLET-2011": "Lapaz, Accra",
     "W-7": "Accra Central, Accra",
+    "WALLET-1001": "Kasarani, Nairobi",
+    "WALLET-1002": "Roysambu, Nairobi",
+    "WALLET-1003": "Westlands, Nairobi",
+    "WALLET-1004": "Kilimani, Nairobi",
+    "WALLET-9001": "CBD, Nairobi",
+    "0240723836": "Kasarani, Nairobi",
 }
 
 
 def _resolve_case_location(case):
+    if case.get("location_name"):
+        return str(case["location_name"]).strip()
+
     lat = case.get("location_latitude")
     lon = case.get("location_longitude")
     if lat is not None and lon is not None:
         try:
             f_lat = float(lat)
             f_lon = float(lon)
-            # Kenya - USIU-Africa / Qwetu / Roysambu / Kasarani (Nairobi)
-            if -1.240 <= f_lat <= -1.200 and 36.860 <= f_lon <= 36.915:
-                return "USIU-A (Qwetu), Nairobi"
-            elif -1.250 <= f_lat <= -1.190 and 36.830 <= f_lon <= 36.940:
-                return "USIU-A / Roysambu, Nairobi"
+            # Kenya - Specific Nairobi sub-regions
+            if -1.235 <= f_lat <= -1.210 and 36.870 <= f_lon <= 36.905:
+                return "Roysambu, Kasarani, Nairobi"
+            elif -1.255 <= f_lat <= -1.185 and 36.830 <= f_lon <= 36.940:
+                return "Kasarani, Nairobi"
             elif -1.280 <= f_lat <= -1.250 and 36.780 <= f_lon <= 36.830:
                 return "Westlands, Nairobi"
             elif -1.310 <= f_lat <= -1.275 and 36.760 <= f_lon <= 36.810:
@@ -1352,7 +1366,7 @@ def _resolve_case_location(case):
             elif -1.300 <= f_lat <= -1.270 and 36.810 <= f_lon <= 36.845:
                 return "CBD, Nairobi"
             elif -1.400 <= f_lat <= -1.150 and 36.650 <= f_lon <= 37.100:
-                return "USIU-A (Qwetu), Nairobi"
+                return "Nairobi City, Kenya"
             elif -4.100 <= f_lat <= -3.950 and 39.600 <= f_lon <= 39.750:
                 return "Mombasa, Kenya"
             elif -0.150 <= f_lat <= 0.050 and 34.700 <= f_lon <= 34.850:
@@ -1360,7 +1374,7 @@ def _resolve_case_location(case):
             elif -0.350 <= f_lat <= -0.200 and 36.000 <= f_lon <= 36.150:
                 return "Nakuru, Kenya"
             elif -4.8 <= f_lat <= 5.0 and 33.8 <= f_lon <= 41.9:
-                return "USIU-A (Qwetu), Nairobi"
+                return "Nairobi, Kenya"
             # Ghana
             elif 5.50 <= f_lat <= 5.70 and -0.25 <= f_lon <= -0.12:
                 return "East Legon, Accra"
@@ -1384,10 +1398,7 @@ def _resolve_case_location(case):
                 return "Ho, Volta"
             elif 4.5 <= f_lat <= 11.5 and -3.5 <= f_lon <= 1.5:
                 return "Ghana (Mobile Network)"
-            # Any coordinate near East Africa
-            if -5.0 <= f_lat <= 5.0 and 28.0 <= f_lon <= 42.0:
-                return "USIU-A (Qwetu), Nairobi"
-            return "East Legon, Accra"
+            return f"Location ({f_lat:.2f}°, {f_lon:.2f}°)"
         except (ValueError, TypeError):
             pass
 
@@ -1395,7 +1406,7 @@ def _resolve_case_location(case):
         if key and key in _KNOWN_KYC_LOCATIONS:
             return _KNOWN_KYC_LOCATIONS[key]
 
-    return "USIU-A (Qwetu), Nairobi"
+    return "Primary Registered Location"
 
 
 def get_fraud_cases(include_resolved=False):
@@ -1425,6 +1436,7 @@ def get_fraud_cases(include_resolved=False):
                 t.device_label,
                 t.location_latitude,
                 t.location_longitude,
+                t.location_name,
                 r.risk_score,
                 r.risk_level,
                 a.severity,
@@ -1885,6 +1897,7 @@ def create_momo_session(
     location_longitude=None,
     otp_expires_at=None,
     device_label=None,
+    location_name=None,
 ):
     """Create an in-flight transaction session for the simulated MoMo flow."""
     connection = get_connection()
@@ -1909,11 +1922,12 @@ def create_momo_session(
             live_mtn,
             location_latitude,
             location_longitude,
+            location_name,
             status,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
         """,
         (
             session_id,
@@ -1931,6 +1945,7 @@ def create_momo_session(
             int(live_mtn),
             location_latitude,
             location_longitude,
+            location_name,
             now,
             now
         )
@@ -2970,6 +2985,7 @@ def record_customer_security_signal(
     session_id=None,
     trusted=False,
     location_consent=False,
+    location_name=None,
 ):
     """Persist privacy-disclosed device, network, and coarse location observations."""
     connection = get_connection()
@@ -2979,8 +2995,8 @@ def record_customer_security_signal(
             INSERT INTO customer_security_signals (
                 customer_ref, session_id, event_type, device_id, ip_address,
                 location_latitude, location_longitude, location_consent,
-                trusted, observed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                trusted, observed_at, location_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             """,
             (
@@ -2994,6 +3010,7 @@ def record_customer_security_signal(
                 int(bool(location_consent)),
                 int(trusted),
                 datetime.now(timezone.utc).isoformat(),
+                location_name,
             ),
         )
         signal_id = cursor.fetchone()["id"]
