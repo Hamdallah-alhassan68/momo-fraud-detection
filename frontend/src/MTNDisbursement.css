@@ -1474,3 +1474,118 @@
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* DECLINED ACTIONS & COMPLAINT BOX */
+.declined-action-box {
+  margin-top: 14px;
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+
+.declined-action-header strong {
+  display: block;
+  font-size: 0.88rem;
+  color: #0f172a;
+  margin-bottom: 4px;
+}
+
+.declined-action-header p {
+  margin: 0 0 10px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: #64748b;
+}
+
+.complaint-button-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.complaint-call-action-btn {
+  width: 100%;
+  padding: 10px 14px;
+  background: #0284c7;
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: background 0.15s ease;
+}
+
+.complaint-call-action-btn:hover:not(:disabled) {
+  background: #0369a1;
+}
+
+.complaint-message-toggle-btn {
+  width: 100%;
+  padding: 10px 14px;
+  background: #1e293b;
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: background 0.15s ease;
+}
+
+.complaint-message-toggle-btn:hover:not(:disabled) {
+  background: #0f172a;
+}
+
+.complaint-message-toggle-btn.active {
+  background: #334155;
+  outline: 2px solid #0284c7;
+}
+
+.freeze-self-action-btn {
+  width: 100%;
+  padding: 10px 14px;
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 750;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: background 0.15s ease;
+}
+
+.freeze-self-action-btn:hover {
+  background: #fecaca;
+}
+
+.complaint-compose-box {
+  margin-top: 10px;
+  padding: 10px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.submit-complaint-btn {
+  width: 100%;
+  min-height: 38px;
+  font-size: 0.82rem;
+}
+

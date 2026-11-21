@@ -348,6 +348,8 @@ def initialize_database():
 
             scenario TEXT DEFAULT 'NORMAL',
 
+            device_label TEXT,
+
             timestamp TEXT NOT NULL,
 
             created_at TEXT NOT NULL
@@ -602,6 +604,8 @@ def initialize_database():
 
             device_id TEXT,
 
+            device_label TEXT,
+
             ip_address TEXT,
 
             status TEXT DEFAULT 'PENDING',
@@ -654,6 +658,19 @@ def initialize_database():
             location_consent INTEGER NOT NULL DEFAULT 0,
             trusted INTEGER NOT NULL DEFAULT 0,
             observed_at TEXT NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS customer_complaints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_ref TEXT NOT NULL,
+            transaction_reference TEXT,
+            channel TEXT NOT NULL,
+            message TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'NEW',
+            created_at TEXT NOT NULL
         )
         """
     )
@@ -730,6 +747,7 @@ def initialize_database():
     _ensure_column(
         connection, "transactions", "device_id", "TEXT"
     )
+    _ensure_column(connection, "transactions", "device_label", "TEXT")
     _ensure_column(
         connection, "transactions", "status", "TEXT DEFAULT 'SCORED'"
     )
@@ -754,6 +772,7 @@ def initialize_database():
     _ensure_column(connection, "fraud_cases", "contact_outcome", "TEXT")
     _ensure_column(connection, "fraud_cases", "contact_at", "TEXT")
     _ensure_column(connection, "momo_sessions", "scenario", "TEXT DEFAULT 'NORMAL'")
+    _ensure_column(connection, "momo_sessions", "device_label", "TEXT")
     _ensure_column(connection, "momo_sessions", "live_mtn", "INTEGER DEFAULT 0")
     _ensure_column(connection, "momo_sessions", "mtn_reference_id", "TEXT")
     _ensure_column(connection, "momo_sessions", "transaction_reference", "TEXT")
@@ -968,9 +987,10 @@ def create_transaction(transaction):
                 mtn_reference_id,
                 mtn_financial_id,
                 location_latitude,
-                location_longitude
+                location_longitude,
+                device_label
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             """,
             (
@@ -1014,7 +1034,8 @@ def create_transaction(transaction):
                 transaction.get("mtn_reference_id"),
                 transaction.get("mtn_financial_id"),
                 transaction.get("location_latitude"),
-                transaction.get("location_longitude")
+                transaction.get("location_longitude"),
+                transaction.get("device_label")
             )
         )
 
@@ -1279,6 +1300,77 @@ def create_audit_log(
     connection.close()
 
 
+_KNOWN_KYC_LOCATIONS = {
+    "0241001001": "East Legon, Accra",
+    "WALLET-1001": "East Legon, Accra",
+    "0242002002": "Cantonments, Accra",
+    "WALLET-1002": "Cantonments, Accra",
+    "0243003003": "Adum, Kumasi",
+    "WALLET-1003": "Adum, Kumasi",
+    "233241234567": "Osu, Accra",
+    "WALLET-2001": "Osu, Accra",
+    "0249876543": "Airport Residential, Accra",
+    "WALLET-2002": "Airport Residential, Accra",
+    "0551122334": "Dansoman, Accra",
+    "WALLET-2003": "Dansoman, Accra",
+    "0204455667": "Dzorwulu, Accra",
+    "WALLET-2004": "Dzorwulu, Accra",
+    "0547788990": "Ridge, Accra",
+    "WALLET-2005": "Ridge, Accra",
+    "0244112233": "Achimota, Accra",
+    "WALLET-2006": "Achimota, Accra",
+    "0559988776": "Madina, Accra",
+    "WALLET-2007": "Madina, Accra",
+    "0201122334": "Legon, Accra",
+    "WALLET-2008": "Legon, Accra",
+    "0543322110": "Tema Community 1, Tema",
+    "WALLET-2009": "Tema Community 1, Tema",
+    "0246655443": "Spintex Road, Accra",
+    "WALLET-2010": "Spintex Road, Accra",
+    "0554433221": "Lapaz, Accra",
+    "WALLET-2011": "Lapaz, Accra",
+    "W-7": "Accra Central, Accra",
+}
+
+
+def _resolve_case_location(case):
+    lat = case.get("location_latitude")
+    lon = case.get("location_longitude")
+    if lat is not None and lon is not None:
+        try:
+            f_lat = float(lat)
+            f_lon = float(lon)
+            if 5.48 <= f_lat <= 5.75 and -0.35 <= f_lon <= -0.10:
+                return f"Accra, Greater Accra ({f_lat:.2f}°, {f_lon:.2f}°)"
+            elif 5.60 <= f_lat <= 5.75 and -0.05 <= f_lon <= 0.08:
+                return f"Tema, Greater Accra ({f_lat:.2f}°, {f_lon:.2f}°)"
+            elif 6.55 <= f_lat <= 6.85 and -1.80 <= f_lon <= -1.45:
+                return f"Kumasi, Ashanti ({f_lat:.2f}°, {f_lon:.2f}°)"
+            elif 9.25 <= f_lat <= 9.60 and -1.00 <= f_lon <= -0.65:
+                return f"Tamale, Northern ({f_lat:.2f}°, {f_lon:.2f}°)"
+            elif 4.75 <= f_lat <= 5.05 and -1.95 <= f_lon <= -1.65:
+                return f"Takoradi, Western ({f_lat:.2f}°, {f_lon:.2f}°)"
+            elif 5.05 <= f_lat <= 5.25 and -1.40 <= f_lon <= -1.15:
+                return f"Cape Coast, Central ({f_lat:.2f}°, {f_lon:.2f}°)"
+            elif 5.95 <= f_lat <= 6.20 and -0.40 <= f_lon <= -0.15:
+                return f"Koforidua, Eastern ({f_lat:.2f}°, {f_lon:.2f}°)"
+            elif 7.20 <= f_lat <= 7.45 and -2.45 <= f_lon <= -2.15:
+                return f"Sunyani, Bono ({f_lat:.2f}°, {f_lon:.2f}°)"
+            elif 6.45 <= f_lat <= 6.75 and 0.35 <= f_lon <= 0.65:
+                return f"Ho, Volta ({f_lat:.2f}°, {f_lon:.2f}°)"
+            elif 4.5 <= f_lat <= 11.5 and -3.5 <= f_lon <= 1.5:
+                return f"Ghana ({f_lat:.2f}°, {f_lon:.2f}°)"
+            return f"Location ({f_lat:.2f}°, {f_lon:.2f}°)"
+        except (ValueError, TypeError):
+            pass
+
+    for key in (case.get("customer_ref"), case.get("origin_account"), case.get("destination_account")):
+        if key and key in _KNOWN_KYC_LOCATIONS:
+            return _KNOWN_KYC_LOCATIONS[key]
+
+    return "Accra, Ghana (Network)"
+
+
 def get_fraud_cases(include_resolved=False):
     connection = get_connection()
     cursor = connection.cursor()
@@ -1303,6 +1395,9 @@ def get_fraud_cases(include_resolved=False):
                 account_status.frozen_at AS account_frozen_at,
                 t.ip_address,
                 t.device_id,
+                t.device_label,
+                t.location_latitude,
+                t.location_longitude,
                 r.risk_score,
                 r.risk_level,
                 a.severity,
@@ -1339,6 +1434,7 @@ def get_fraud_cases(include_resolved=False):
         for row in cursor.fetchall():
             case = dict(row)
             case["account_frozen"] = bool(case["account_frozen"])
+            case["location"] = _resolve_case_location(case)
 
             raw_reasons = case.get("fraud_reasons")
 
@@ -1603,11 +1699,15 @@ def unfreeze_account_for_fraud_case(case_id):
             """,
             (now, customer_ref),
         )
+        resolved_case_count = _resolve_customer_fraud_cases(
+            cursor, customer_ref, now
+        )
         connection.commit()
         return {
             "transaction_id": case["transaction_id"],
             "customer_ref": customer_ref,
             "account_frozen": False,
+            "resolved_case_count": resolved_case_count,
         }
     finally:
         connection.close()
@@ -1743,6 +1843,7 @@ def create_momo_session(
     location_latitude=None,
     location_longitude=None,
     otp_expires_at=None,
+    device_label=None,
 ):
     """Create an in-flight transaction session for the simulated MoMo flow."""
     connection = get_connection()
@@ -1761,6 +1862,7 @@ def create_momo_session(
             otp_code,
             otp_expires_at,
             device_id,
+            device_label,
             ip_address,
             scenario,
             live_mtn,
@@ -1770,7 +1872,7 @@ def create_momo_session(
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
         """,
         (
             session_id,
@@ -1782,6 +1884,7 @@ def create_momo_session(
             otp_code,
             otp_expires_at,
             device_id,
+            device_label,
             ip_address,
             scenario,
             int(live_mtn),
@@ -3195,7 +3298,44 @@ def set_account_frozen(customer_ref, reason):
         connection.close()
 
 
-def set_account_unfrozen(customer_ref):
+def _resolve_customer_fraud_cases(cursor, customer_ref, now):
+    refs = [customer_ref]
+    try:
+        profile_row = cursor.execute(
+            "SELECT phone_number, customer_ref FROM sandbox_customer_profiles WHERE customer_ref = ? OR phone_number = ?",
+            (customer_ref, customer_ref),
+        ).fetchone()
+        if profile_row:
+            if profile_row["phone_number"] and profile_row["phone_number"] not in refs:
+                refs.append(profile_row["phone_number"])
+            if profile_row["customer_ref"] and profile_row["customer_ref"] not in refs:
+                refs.append(profile_row["customer_ref"])
+    except Exception:
+        pass
+
+    placeholders = ",".join("?" for _ in refs)
+    params = [now, now] + refs + refs
+    cursor.execute(
+        f"""
+        UPDATE fraud_cases
+        SET case_status = 'RESOLVED',
+            resolved_at = ?,
+            updated_at = ?,
+            analyst_decision = CASE WHEN analyst_decision IS NULL OR analyst_decision = '' THEN 'ACCOUNT_UNFROZEN_LEGITIMATE' ELSE analyst_decision END,
+            analyst_notes = CASE WHEN analyst_notes IS NULL OR analyst_notes = '' THEN 'Automatically resolved upon administrator unfreezing account.' ELSE analyst_notes END
+        WHERE case_status != 'RESOLVED'
+            AND transaction_id IN (
+                SELECT id
+                FROM transactions
+                WHERE (origin_account IN ({placeholders}) OR destination_account IN ({placeholders}))
+            )
+        """,
+        params,
+    )
+    return cursor.rowcount
+
+
+def set_account_unfrozen(customer_ref, resolve_linked_cases=True):
     """Re-activate a customer-frozen account."""
     connection = get_connection()
     cursor = connection.cursor()
@@ -3205,13 +3345,85 @@ def set_account_unfrozen(customer_ref):
         cursor.execute(
             """
             UPDATE account_status
-            SET frozen = 0, updated_at = ?
+            SET frozen = 0, reason = NULL, updated_at = ?
             WHERE customer_ref = ?
             """,
             (now, customer_ref)
         )
+        resolved_case_count = (
+            _resolve_customer_fraud_cases(cursor, customer_ref, now)
+            if resolve_linked_cases
+            else 0
+        )
         connection.commit()
+        return resolved_case_count
 
+    finally:
+        connection.close()
+
+
+def resolve_customer_complaint(complaint_id):
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE customer_complaints
+            SET status = 'RESOLVED'
+            WHERE id = ?
+            """,
+            (complaint_id,),
+        )
+        connection.commit()
+        return cursor.rowcount > 0
+    finally:
+        connection.close()
+
+
+def create_customer_complaint(
+    customer_ref, transaction_reference, channel, message
+):
+    connection = get_connection()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = connection.execute(
+            """
+            INSERT INTO customer_complaints (
+                customer_ref, transaction_reference, channel, message, created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            RETURNING id
+            """,
+            (customer_ref, transaction_reference, channel, message, now),
+        )
+        complaint_id = cursor.fetchone()["id"]
+        connection.commit()
+        return complaint_id
+    finally:
+        connection.close()
+
+
+def get_customer_complaints(limit=100):
+    connection = get_connection()
+    try:
+        rows = connection.execute(
+            """
+            SELECT
+                id AS complaint_id,
+                customer_ref,
+                customer_ref AS phone_number,
+                transaction_reference,
+                channel,
+                message,
+                status,
+                created_at
+            FROM customer_complaints
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
     finally:
         connection.close()
 

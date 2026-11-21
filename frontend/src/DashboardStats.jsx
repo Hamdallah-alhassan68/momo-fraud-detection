@@ -21,12 +21,17 @@ export default function DashboardStats() {
 
   useEffect(() => {
     loadStats();
+    const handleRefresh = () => loadStats();
+    window.addEventListener("momo:stats-refresh", handleRefresh);
     const unsubscribe = subscribeAdminEvents((payload) => {
       if (["stats", "transaction", "alert", "case"].includes(payload.event)) {
         loadStats();
       }
     });
-    return unsubscribe;
+    return () => {
+      window.removeEventListener("momo:stats-refresh", handleRefresh);
+      unsubscribe();
+    };
   }, [loadStats]);
 
   if (error) return <p role="alert">{error}</p>;

@@ -438,6 +438,7 @@ def initiate_transaction(
     location_latitude=None,
     location_longitude=None,
     otp_sms_sender: Callable[[str, str, dict], bool] | None = None,
+    device_label=None,
 ):
     """Start a MoMo transaction; returns a session awaiting PIN/OTP."""
     customer = _ensure_customer(customer_ref)
@@ -566,6 +567,7 @@ def initiate_transaction(
         location_latitude=location[0] if location else None,
         location_longitude=location[1] if location else None,
         otp_expires_at=otp_expires_at,
+        device_label=device_label,
     )
 
     message = (
@@ -593,6 +595,7 @@ def initiate_transaction(
         "transaction_type": transaction_type,
         "customer_ref": customer_ref,
         "device_id": device_id,
+        "device_label": device_label,
         "ip_address": ip_address,
         "scenario": scenario_storage,
         "scenarios": scenarios,
@@ -842,6 +845,7 @@ def verify_transaction(
     )
 
     device_id = session.get("device_id") or customer["devices"][0]
+    device_label = session.get("device_label")
     ip_address = session.get("ip_address") or customer["base_ip"]
 
     scenarios = _parse_scenarios(session.get("scenario") or "NORMAL")
@@ -1002,6 +1006,7 @@ def verify_transaction(
         "unusual_hour": unusual_hour,
         "ip_address": ip_address,
         "device_id": device_id,
+        "device_label": device_label,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     if location:

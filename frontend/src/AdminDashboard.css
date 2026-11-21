@@ -1059,3 +1059,152 @@ td small {
   font-weight: 500;
   display: inline-block;
 }
+
+/* COMPLAINTS & NOTIFICATION TOAST */
+.complaint-alert-toast {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 14px 18px;
+  background: #fef2f2;
+  border: 1px solid #f87171;
+  border-left: 6px solid #dc2626;
+  border-radius: 10px;
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.15);
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from {
+    transform: translateY(-8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.toast-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #991b1b;
+  font-size: 0.95rem;
+}
+
+.toast-icon {
+  font-size: 1.3rem;
+}
+
+.toast-dismiss-btn {
+  background: transparent;
+  border: 1px solid #f87171;
+  color: #991b1b;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.toast-dismiss-btn:hover {
+  background: #fee2e2;
+}
+
+.complaints-panel {
+  margin-top: 24px;
+}
+
+.complaint-row-new {
+  background: #fffbeb;
+}
+
+.customer-phone-highlight {
+  display: inline-block;
+  padding: 3px 8px;
+  background: #e2e8f0;
+  border-radius: 6px;
+  color: #0f172a;
+  font-size: 0.88rem;
+}
+
+.channel-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.3px;
+}
+
+.channel-call {
+  background: #e0f2fe;
+  color: #0284c7;
+  border: 1px solid #bae6fd;
+}
+
+.channel-message {
+  background: #f1f5f9;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+}
+
+.complaint-message-cell {
+  max-width: 360px;
+  white-space: normal;
+}
+
+.complaint-message-text {
+  max-height: 4.5em;
+  overflow-y: auto;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: #1e293b;
+}
+
+/* ACCOUNT CONTROLS TABS */
+.controls-tab-row {
+  display: flex;
+  gap: 8px;
+  margin: 14px 0 16px;
+}
+
+.controls-tab-btn {
+  padding: 8px 16px;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.controls-tab-btn:hover {
+  background: #e2e8f0;
+}
+
+.controls-tab-btn.active {
+  background: #0284c7;
+  color: #ffffff;
+  border-color: #0284c7;
+}
+
+.location-cell {
+  font-size: 0.85rem;
+  color: #334155;
+  white-space: nowrap;
+}
+
+.device-cell {
+  font-size: 0.85rem;
+  color: #1e293b;
+}
+

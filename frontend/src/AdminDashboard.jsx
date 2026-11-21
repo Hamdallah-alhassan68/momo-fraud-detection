@@ -1,6 +1,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { adminFetch, getCurrentUser, subscribeAdminEvents } from "./adminApi.js";
+import { formatDeviceDisplayName } from "./deviceInfo.js";
 import { describeRiskSignal } from "./riskSignals.js";
 import "./AdminDashboard.css";
 
@@ -43,6 +44,11 @@ function AdminDashboard({ currentUser: propUser } = {}) {
   const [unfreezeRequests, setUnfreezeRequests] = useState([]);
   const [unfreezeRequestsLoading, setUnfreezeRequestsLoading] = useState(true);
   const [unfreezeRequestsError, setUnfreezeRequestsError] = useState("");
+  const [complaints, setComplaints] = useState([]);
+  const [complaintsLoading, setComplaintsLoading] = useState(true);
+  const [complaintsError, setComplaintsError] = useState("");
+  const [complaintNotification, setComplaintNotification] = useState(null);
+  const [accountControlTab, setAccountControlTab] = useState("frozen");
   const [updatingCustomer, setUpdatingCustomer] = useState("");
   const [alertsLoading, setAlertsLoading] = useState(true);
   const [alertsError, setAlertsError] = useState("");
@@ -142,16 +148,58 @@ async function loadAlerts() {
     }
   }, [isAdmin]);
 
+  const loadComplaints = useCallback(async () => {
+    setComplaintsLoading(true);
+    setComplaintsError("");
+    try {
+      const response = await adminFetch("/api/admin/customer-complaints");
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Unable to load customer complaints.");
+      }
+      setComplaints(data.complaints || []);
+    } catch (err) {
+      setComplaintsError(err.message || "Could not load customer complaints.");
+    } finally {
+      setComplaintsLoading(false);
+    }
+  }, []);
+
+  async function resolveComplaint(complaintId) {
+    try {
+      const response = await adminFetch(`/api/admin/customer-complaints/${complaintId}/resolve`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || "Unable to resolve complaint.");
+      }
+      await loadComplaints();
+      setMessage(`Complaint #${complaintId} marked as reviewed.`);
+    } catch (err) {
+      setError(err.message || "Failed to resolve complaint.");
+    }
+  }
+
   useEffect(() => {
     loadCases();
     loadAlerts();
     loadAccounts();
     loadUnfreezeRequests();
+    loadComplaints();
 
     const unsubscribe = subscribeAdminEvents((payload) => {
       if (payload.event === "case") loadCases();
       if (payload.event === "stats") loadAccounts();
       if (payload.event === "audit") loadUnfreezeRequests();
+      if (payload.event === "complaint") {
+        loadComplaints();
+        if (payload.phone_number || payload.message) {
+          setComplaintNotification(
+            `New ${payload.channel === "CALL" ? "Phone Call Request" : "Complaint Message"} from ${payload.phone_number || payload.customer_ref || "customer"}: "${(payload.message || "").slice(0, 75)}"`
+          );
+        }
+      }
       if (payload.event === "alert" || payload.event === "transaction") {
         loadAlerts();
         loadCases();
@@ -162,7 +210,7 @@ async function loadAlerts() {
       unsubscribe();
       stopRingtone();
     };
-  }, [loadUnfreezeRequests]);
+  }, [loadUnfreezeRequests, loadComplaints]);
 
   function stopRingtone() {
     if (ringtoneTimer.current !== null) {
@@ -414,11 +462,13 @@ async function loadAlerts() {
         ...current,
         account_frozen: false,
         account_freeze_reason: null,
+        case_status: "RESOLVED",
       }));
-      await loadCases();
+      await Promise.all([loadCases(), loadAccounts(), loadUnfreezeRequests()]);
       setMessage(
-        `${data.customer_ref} is unfrozen. The investigation status is unchanged.`
+        `${data.customer_ref} is unfrozen and linked investigation case(s) automatically resolved.`
       );
+      window.dispatchEvent(new CustomEvent("momo:stats-refresh"));
     } catch (err) {
       setError(err.message || "Unable to unfreeze customer account.");
     } finally {
@@ -449,10 +499,14 @@ async function loadAlerts() {
               ...current,
               account_frozen: false,
               account_freeze_reason: null,
+              case_status: "RESOLVED",
             }
           : current
       );
-      setMessage(`${data.customer_ref} is unfrozen.`);
+      setMessage(
+        `${data.customer_ref} is unfrozen and linked investigation case(s) automatically resolved.`
+      );
+      window.dispatchEvent(new CustomEvent("momo:stats-refresh"));
     } catch (err) {
       setError(err.message || "Unable to unfreeze customer account.");
     } finally {
@@ -522,11 +576,30 @@ async function loadAlerts() {
             loadCases();
             loadAlerts();
             loadAccounts();
+            loadComplaints();
           }}
         >
           Refresh dashboard
         </button>
       </header>
+
+      {complaintNotification && (
+        <div className="complaint-alert-toast" role="alert">
+          <div className="toast-content">
+            <span className="toast-icon">🚨</span>
+            <div>
+              <strong>Customer Action Required:</strong> {complaintNotification}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="toast-dismiss-btn"
+            onClick={() => setComplaintNotification(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {error && <p className="dashboard-error">{error}</p>}
       {message && <p className="dashboard-success">{message}</p>}
@@ -595,11 +668,94 @@ async function loadAlerts() {
               </td>
               <td>{alert.status}</td>
               <td className="mono">{alert.ip_address || "—"}</td>
-              <td className="mono">{alert.device_id || "—"}</td>
+              <td className="device-cell" title={alert.device_id}>
+                {formatDeviceDisplayName(alert.device_id, alert.device_label)}
+              </td>
               <td>
                 {alert.created_at
                   ? new Date(alert.created_at).toLocaleString()
                   : "—"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )}
+</section>
+
+{/* CUSTOMER COMPLAINTS & INQUIRIES SECTION */}
+<section id="customer-complaints-section" className="cases-panel complaints-panel">
+  <div className="panel-heading">
+    <div>
+      <h2>Customer Complaints &amp; Inquiries</h2>
+      <p>
+        Live feed of dispute messages and call requests from customers whose transactions were blocked.
+      </p>
+    </div>
+    <strong>
+      {complaints.filter((c) => c.status === "NEW").length} new · {complaints.length} total
+    </strong>
+  </div>
+
+  {complaintsError && <p className="dashboard-error">{complaintsError}</p>}
+  {complaintsLoading ? (
+    <p className="empty-state">Loading customer complaints...</p>
+  ) : complaints.length === 0 ? (
+    <p className="empty-state">No customer complaints or call requests have been submitted.</p>
+  ) : (
+    <div className="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Customer Phone</th>
+            <th>Channel</th>
+            <th>Transaction Ref</th>
+            <th>Complaint Message</th>
+            <th>Time</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {complaints.map((c) => (
+            <tr key={c.complaint_id} className={c.status === "NEW" ? "complaint-row-new" : ""}>
+              <td>#{c.complaint_id}</td>
+              <td>
+                <strong className="mono customer-phone-highlight">
+                  {c.phone_number || c.customer_ref}
+                </strong>
+              </td>
+              <td>
+                <span className={`channel-badge ${c.channel === "CALL" ? "channel-call" : "channel-message"}`}>
+                  {c.channel === "CALL" ? "📞 CALL REQUEST" : "💬 MESSAGE"}
+                </span>
+              </td>
+              <td className="mono">{c.transaction_reference || "—"}</td>
+              <td className="complaint-message-cell">
+                <div className="complaint-message-text">{c.message}</div>
+              </td>
+              <td>{c.created_at ? new Date(c.created_at).toLocaleString() : "—"}</td>
+              <td>
+                <span className={`case-status-badge ${c.status === "NEW" ? "not-started" : "investigated"}`}>
+                  {c.status}
+                </span>
+              </td>
+              <td>
+                {c.status === "NEW" && isAdmin ? (
+                  <button
+                    type="button"
+                    className="review-button"
+                    onClick={() => resolveComplaint(c.complaint_id)}
+                  >
+                    Mark Reviewed
+                  </button>
+                ) : c.status === "NEW" ? (
+                  <span className="text-muted text-sm">New</span>
+                ) : (
+                  <span className="text-muted text-sm">Reviewed</span>
+                )}
               </td>
             </tr>
           ))}
@@ -704,11 +860,32 @@ async function loadAlerts() {
     </strong>
   </div>
 
+  <div className="controls-tab-row">
+    <button
+      type="button"
+      className={`controls-tab-btn ${accountControlTab === "frozen" ? "active" : ""}`}
+      onClick={() => setAccountControlTab("frozen")}
+    >
+      Frozen Wallets ({accounts.filter((a) => a.account_frozen).length})
+    </button>
+    <button
+      type="button"
+      className={`controls-tab-btn ${accountControlTab === "all" ? "active" : ""}`}
+      onClick={() => setAccountControlTab("all")}
+    >
+      All Demo Wallets ({accounts.length})
+    </button>
+  </div>
+
   {accountsError && <p className="dashboard-error">{accountsError}</p>}
   {accountsLoading ? (
     <p className="empty-state">Loading demo accounts...</p>
-  ) : accounts.length === 0 ? (
-    <p className="empty-state">No demo accounts are available.</p>
+  ) : (accountControlTab === "frozen" ? accounts.filter((a) => a.account_frozen) : accounts).length === 0 ? (
+    <p className="empty-state">
+      {accountControlTab === "frozen"
+        ? "✅ No wallets are currently frozen under Admin controls. All customer wallets active."
+        : "No demo accounts are available."}
+    </p>
   ) : (
     <div className="table-wrapper">
       <table>
@@ -721,7 +898,7 @@ async function loadAlerts() {
           </tr>
         </thead>
         <tbody>
-          {accounts.map((account) => (
+          {(accountControlTab === "frozen" ? accounts.filter((a) => a.account_frozen) : accounts).map((account) => (
             <tr key={account.customer_ref}>
               <td>{account.name}</td>
               <td className="mono">{account.customer_ref}</td>
@@ -801,6 +978,7 @@ async function loadAlerts() {
             <th>Risk</th>
             <th>IP address</th>
             <th>Device</th>
+            <th>Location</th>
             <th>Account</th>
             <th>Status</th>
             <th>Created</th>
@@ -823,7 +1001,12 @@ async function loadAlerts() {
                 </span>
               </td>
               <td className="mono">{caseItem.ip_address || "—"}</td>
-              <td className="mono">{caseItem.device_id || "—"}</td>
+              <td className="device-cell" title={caseItem.device_id}>
+                {formatDeviceDisplayName(caseItem.device_id, caseItem.device_label)}
+              </td>
+              <td className="location-cell">
+                {caseItem.location || "Accra, Ghana"}
+              </td>
               <td>
                 <span
                   className={`account-status-badge ${
@@ -986,8 +1169,14 @@ async function loadAlerts() {
             </div>
             <div>
               <span>Device</span>
-              <strong className="mono">
-                {selectedCase.device_id || "Not provided"}
+              <strong className="device-cell" title={selectedCase.device_id}>
+                {formatDeviceDisplayName(selectedCase.device_id, selectedCase.device_label)}
+              </strong>
+            </div>
+            <div>
+              <span>Customer Location</span>
+              <strong className="location-cell">
+                {selectedCase.location || "Accra, Ghana"}
               </strong>
             </div>
             <div>

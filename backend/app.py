@@ -18,7 +18,10 @@ from database.database import (
     INTEGRITY_ERRORS,
     create_admin_user,
     create_audit_log,
+    create_customer_complaint,
+    resolve_customer_complaint,
     get_customer_recipient_history,
+    get_customer_complaints,
     get_momo_session,
     has_pending_mtn_transfer,
     create_sandbox_customer_profile,
@@ -649,6 +652,14 @@ def _validate_device_id(value):
     return clean
 
 
+def _validate_device_label(value):
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value.strip()) > 120:
+        raise HTTPException(status_code=400, detail="Device name is invalid.")
+    return value.strip() or None
+
+
 def _validate_customer_location(body):
     latitude = body.get("location_latitude")
     longitude = body.get("location_longitude")
@@ -762,6 +773,7 @@ def momo_customer_register(
         )
     location = _validate_customer_location(body)
     device_id = _validate_device_id(body.get("device_id"))
+    device_label = _validate_device_label(body.get("device_label"))
     if not device_id:
         raise HTTPException(status_code=400, detail="Device security context is unavailable.")
     if find_subscriber(phone) or get_sandbox_customer_profile(phone):
@@ -921,6 +933,93 @@ def momo_customer_request_unfreeze(
             "The wallet stays frozen until an administrator reviews it."
         ),
     }
+
+
+@app.post("/api/momo/customer/complaints")
+def momo_customer_complaint(
+    body: dict = Body(...),
+    authorization: str | None = Header(default=None),
+):
+    subscriber = _require_sandbox_customer(authorization)
+    customer_ref = str(subscriber.get("phone_number") or "")
+    channel = str(body.get("channel") or "").strip().upper()
+    if channel not in {"CALL", "MESSAGE"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose CALL or MESSAGE as the complaint channel.",
+        )
+
+    message = str(body.get("message") or "").strip()
+    if channel == "CALL" and not message:
+        message = "Customer requested a call about a blocked transaction."
+    if not message:
+        raise HTTPException(status_code=400, detail="Enter a message for the Admin team.")
+    if len(message) > 1000:
+        raise HTTPException(
+            status_code=400,
+            detail="The complaint message must be 1000 characters or fewer.",
+        )
+
+    transaction_reference = body.get("transaction_reference")
+    if transaction_reference is not None:
+        if not isinstance(transaction_reference, str) or len(transaction_reference) > 80:
+            raise HTTPException(
+                status_code=400,
+                detail="Transaction reference is invalid.",
+            )
+        connection = get_connection()
+        try:
+            transaction = connection.execute(
+                """
+                SELECT 1
+                FROM transactions
+                WHERE transaction_reference = ?
+                    AND (origin_account = ? OR destination_account = ?)
+                """,
+                (transaction_reference, customer_ref, customer_ref),
+            ).fetchone()
+        finally:
+            connection.close()
+        if transaction is None:
+            raise HTTPException(
+                status_code=404,
+                detail="The transaction was not found for this wallet.",
+            )
+
+    try:
+        complaint_id = create_customer_complaint(
+            customer_ref, transaction_reference, channel, message
+        )
+        create_audit_log(
+            None,
+            "CUSTOMER_COMPLAINT_SUBMITTED",
+            customer_ref,
+            f"Complaint ID: {complaint_id}; Channel: {channel}; "
+            f"Transaction: {transaction_reference or 'not provided'}.",
+        )
+        events.publish("complaint", {
+            "complaint_id": complaint_id,
+            "customer_ref": customer_ref,
+            "phone_number": customer_ref,
+            "channel": channel,
+            "message": message,
+            "transaction_reference": transaction_reference,
+            "status": "NEW",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        events.publish("audit", {"reason": "customer complaint submitted"})
+        return {
+            "complaint_id": complaint_id,
+            "status": "NEW",
+            "message": "Your complaint has been sent to the Admin team.",
+        }
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception("Unable to record customer complaint")
+        raise HTTPException(
+            status_code=500, detail="Unable to send your complaint."
+        ) from error
 
 
 @app.post("/api/momo/customer/security-code")
@@ -1682,6 +1781,7 @@ def momo_transaction_initiate(
             )
         location = _validate_customer_location(body)
         device_id = _validate_device_id(body.get("device_id"))
+        device_label = _validate_device_label(body.get("device_label"))
         if is_customer_session and not device_id:
             raise HTTPException(
                 status_code=400,
@@ -1700,6 +1800,7 @@ def momo_transaction_initiate(
             location_longitude=(
                 location[1] if location else None
             ),
+            device_label=device_label,
             scenario=(
                 body.get("scenarios")
                 if body.get("scenarios") is not None
@@ -2053,11 +2154,30 @@ def momo_kyc_verify_id(body: dict = Body(...)):
 
 
 @app.post("/api/momo/account/freeze")
-def momo_account_freeze(body: dict = Body(...)):
-    if not body.get("customer_ref") or body.get("code") is None:
-        raise HTTPException(status_code=400, detail="customer_ref and code are required.")
+def momo_account_freeze(
+    body: dict = Body(...),
+    authorization: str | None = Header(default=None),
+):
+    if body.get("code") is None:
+        raise HTTPException(status_code=400, detail="A wallet PIN is required.")
+    if authorization:
+        subscriber = _require_sandbox_customer(authorization)
+        customer_ref = str(subscriber.get("phone_number") or "")
+        requested_ref = body.get("customer_ref")
+        if requested_ref and str(requested_ref) != customer_ref:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only freeze the wallet you are signed in to.",
+            )
+    else:
+        customer_ref = body.get("customer_ref")
+        if not customer_ref:
+            raise HTTPException(
+                status_code=401,
+                detail="Sign in to a sandbox demo wallet first.",
+            )
     try:
-        return momo_freeze(body["customer_ref"], body["code"])
+        return momo_freeze(customer_ref, body["code"])
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
@@ -2066,11 +2186,30 @@ def momo_account_freeze(body: dict = Body(...)):
 
 
 @app.post("/api/momo/account/unfreeze")
-def momo_account_unfreeze(body: dict = Body(...)):
-    if not body.get("customer_ref") or body.get("code") is None:
-        raise HTTPException(status_code=400, detail="customer_ref and code are required.")
+def momo_account_unfreeze(
+    body: dict = Body(...),
+    authorization: str | None = Header(default=None),
+):
+    if body.get("code") is None:
+        raise HTTPException(status_code=400, detail="A wallet PIN is required.")
+    if authorization:
+        subscriber = _require_sandbox_customer(authorization)
+        customer_ref = str(subscriber.get("phone_number") or "")
+        requested_ref = body.get("customer_ref")
+        if requested_ref and str(requested_ref) != customer_ref:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only unfreeze the wallet you are signed in to.",
+            )
+    else:
+        customer_ref = body.get("customer_ref")
+        if not customer_ref:
+            raise HTTPException(
+                status_code=401,
+                detail="Sign in to a sandbox demo wallet first.",
+            )
     try:
-        return momo_unfreeze(body["customer_ref"], body["code"])
+        return momo_unfreeze(customer_ref, body["code"])
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
@@ -2329,9 +2468,10 @@ def unfreeze_case_account(
         events.publish("audit", {"reason": "logged"})
         events.publish("stats", {"reason": "account_unfrozen"})
         return {
-            "message": "Demo account unfrozen; investigation status is unchanged.",
+            "message": "Demo account unfrozen and linked investigation cases resolved.",
             "customer_ref": result["customer_ref"],
             "account_frozen": result["account_frozen"],
+            "resolved_case_count": result["resolved_case_count"],
         }
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -2490,7 +2630,9 @@ def unfreeze_demo_account(
         if not account["account_frozen"]:
             raise HTTPException(status_code=409, detail="Demo wallet is not frozen.")
 
-        set_account_unfrozen(customer_ref)
+        resolved_case_count = set_account_unfrozen(
+            customer_ref, resolve_linked_cases=True
+        )
         create_audit_log(
             None,
             "ACCOUNT_UNFROZEN_BY_ADMIN",
@@ -2504,9 +2646,12 @@ def unfreeze_demo_account(
         events.publish("audit", {"reason": "logged"})
         events.publish("stats", {"reason": "account_unfrozen"})
         return {
-            "message": "Demo wallet unfrozen; investigation cases are unchanged.",
+            "message": (
+                "Demo wallet unfrozen and linked investigation cases resolved."
+            ),
             "customer_ref": customer_ref,
             "account_frozen": False,
+            "resolved_case_count": resolved_case_count,
         }
     except HTTPException:
         raise
@@ -2550,6 +2695,48 @@ def admin_account_unfreeze_requests():
         ) from error
 
 
+@app.get(
+    "/api/admin/customer-complaints",
+    dependencies=[Depends(require_admin)],
+)
+def admin_customer_complaints():
+    try:
+        complaints = get_customer_complaints()
+        return {"total": len(complaints), "complaints": complaints}
+    except Exception as error:
+        logger.exception("Unable to retrieve customer complaints")
+        raise HTTPException(
+            status_code=500, detail="Unable to retrieve customer complaints."
+        ) from error
+
+
+@app.post(
+    "/api/admin/customer-complaints/{complaint_id}/resolve",
+    dependencies=[Depends(require_admin)],
+)
+def admin_resolve_complaint(
+    complaint_id: int,
+    current_user: dict = Depends(require_admin),
+):
+    try:
+        success = resolve_customer_complaint(complaint_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Complaint not found.")
+        create_audit_log(
+            None,
+            "CUSTOMER_COMPLAINT_RESOLVED",
+            current_user.get("username", "ADMIN"),
+            f"Complaint #{complaint_id} marked as resolved.",
+        )
+        events.publish("complaint", {"complaint_id": complaint_id, "status": "RESOLVED"})
+        return {"status": "RESOLVED", "message": f"Complaint #{complaint_id} marked as resolved."}
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception("Unable to resolve complaint")
+        raise HTTPException(status_code=500, detail="Unable to resolve complaint.") from error
+
+
 @app.get("/api/admin/audit-logs", dependencies=[Depends(require_viewer)])
 def audit_logs():
     try:
@@ -2579,7 +2766,7 @@ def fraud_alerts():
         cursor.execute(
             """
             SELECT a.id AS alert_id, a.transaction_id, t.transaction_reference,
-                   t.ip_address, t.device_id, a.severity, a.status, a.reason,
+                   t.ip_address, t.device_id, t.device_label, a.severity, a.status, a.reason,
                    a.created_at
             FROM fraud_alerts a
             JOIN transactions t ON t.id = a.transaction_id

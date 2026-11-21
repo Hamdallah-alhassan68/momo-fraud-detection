@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { adminFetch, API_URL } from "./adminApi.js";
+import { detectDeviceLabel } from "./deviceInfo.js";
 import "./MTNDisbursement.css";
 
 // Clean SVG Icons (replacing all emojis for enterprise-grade styling)
@@ -210,6 +211,10 @@ export default function MTNDisbursement() {
   const [securityPin, setSecurityPin] = useState("");
   const [unfreezeRequestPending, setUnfreezeRequestPending] = useState(false);
   const [unfreezeRequestNote, setUnfreezeRequestNote] = useState("");
+  const [complaintText, setComplaintText] = useState("");
+  const [complaintMessage, setComplaintMessage] = useState("");
+  const [complaintError, setComplaintError] = useState("");
+  const [showComplaintBox, setShowComplaintBox] = useState(false);
 
   // Statements History
   const [recentTransactions, setRecentTransactions] = useState([
@@ -417,6 +422,7 @@ export default function MTNDisbursement() {
           phone_number: loginNumber,
           pin: loginPin,
           device_id: getBrowserDeviceId(),
+          device_label: await detectDeviceLabel(),
         }),
       });
       const data = await response.json();
@@ -453,6 +459,7 @@ export default function MTNDisbursement() {
             privacy_notice_accepted: privacyNoticeAccepted,
             location_consent: shareCoarseLocation,
             device_id: getBrowserDeviceId(),
+            device_label: await detectDeviceLabel(),
             ...(location && {
               location_latitude: location.latitude,
               location_longitude: location.longitude,
@@ -574,6 +581,7 @@ export default function MTNDisbursement() {
         recipient: recipientNumber.trim(),
         location_consent: shareCoarseLocation,
         device_id: getBrowserDeviceId(),
+        device_label: await detectDeviceLabel(),
         scenario: "NORMAL",
         live_mtn:
           transactionType === "TRANSFER" &&
@@ -874,7 +882,10 @@ export default function MTNDisbursement() {
     try {
       const res = await fetch(`${API_URL}/api/momo/account/freeze`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${customerToken}`,
+        },
         body: JSON.stringify({
           customer_ref: senderNumber,
           code: securityPin,
@@ -912,7 +923,10 @@ export default function MTNDisbursement() {
     try {
       const res = await fetch(`${API_URL}/api/momo/account/unfreeze`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${customerToken}`,
+        },
         body: JSON.stringify({
           customer_ref: senderNumber,
           code: securityPin,
@@ -977,6 +991,62 @@ export default function MTNDisbursement() {
     }
   }
 
+  async function submitCustomerComplaint(channel) {
+    const message =
+      complaintText.trim() ||
+      (channel === "CALL"
+        ? `Customer requested a call about blocked transaction ${receipt?.transaction_reference || "transfer"}.`
+        : "");
+    if (!message) {
+      setComplaintError("Enter a message for the Admin team.");
+      return;
+    }
+
+    setLoading(true);
+    setComplaintError("");
+    setComplaintMessage("");
+    try {
+      const response = await fetch(
+        `${API_URL}/api/momo/customer/complaints`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(customerToken ? { Authorization: `Bearer ${customerToken}` } : {}),
+          },
+          body: JSON.stringify({
+            channel,
+            message,
+            transaction_reference: receipt?.transaction_reference || null,
+            phone_number: customerAccount?.phone_number || null,
+            customer_ref: customerAccount?.customer_ref || null,
+          }),
+        },
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Could not send your complaint.");
+      }
+
+      setComplaintMessage(
+        channel === "CALL"
+          ? "Call complaint logged with Admin. Connecting to customer support at 100..."
+          : (data.message || "Your complaint message has been sent to the Admin team.")
+      );
+      setComplaintText("");
+      setShowComplaintBox(false);
+      if (channel === "CALL") {
+        window.location.href = "tel:100";
+      }
+    } catch (requestError) {
+      setComplaintError(
+        requestError.message || "Could not send your complaint.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function handleReset() {
     setStep("form");
     setSession(null);
@@ -986,9 +1056,16 @@ export default function MTNDisbursement() {
     setStepUpEmailSent(false);
     setStepUpEmailMessage("");
     setStepUpCodeExpiresAt(null);
+    setShowComplaintBox(false);
+    setComplaintText("");
+    setComplaintMessage("");
+    setComplaintError("");
     setStepUpResendAt(null);
     setStepUpChallenge(null);
     setReceipt(null);
+    setComplaintText("");
+    setComplaintMessage("");
+    setComplaintError("");
     setError("");
   }
 
@@ -2147,6 +2224,89 @@ export default function MTNDisbursement() {
                               <li key={i}>{r}</li>
                             ))}
                           </ul>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* CUSTOMER DISPUTE & RESOLUTION SECTION */}
+                    <div className="declined-action-box">
+                      <div className="declined-action-header">
+                        <strong>Dispute this Block or Protect Your Account</strong>
+                        <p>
+                          If this transfer was legitimate, call or message our Fraud Review
+                          team directly. If you suspect your account is compromised, you can freeze your wallet immediately.
+                        </p>
+                      </div>
+
+                      {complaintMessage && (
+                        <div className="form-success-alert" role="status">
+                          <CheckIcon />
+                          <span>{complaintMessage}</span>
+                        </div>
+                      )}
+                      {complaintError && (
+                        <div className="form-error-alert" role="alert">
+                          <AlertIcon />
+                          <span>{complaintError}</span>
+                        </div>
+                      )}
+
+                      <div className="complaint-button-grid">
+                        <button
+                          type="button"
+                          className="complaint-call-action-btn"
+                          disabled={loading}
+                          onClick={() => submitCustomerComplaint("CALL")}
+                        >
+                          <span className="btn-icon">📞</span>
+                          <span>Call Support to Complain (100)</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          className={`complaint-message-toggle-btn ${showComplaintBox ? "active" : ""}`}
+                          onClick={() => setShowComplaintBox(!showComplaintBox)}
+                        >
+                          <span className="btn-icon">💬</span>
+                          <span>{showComplaintBox ? "Hide Message Box" : "Send a Message Instead"}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          className="freeze-self-action-btn"
+                          onClick={() => {
+                            setActiveModal("freeze");
+                            setError("");
+                            setSecurityPin("");
+                          }}
+                        >
+                          <span className="btn-icon">🔒</span>
+                          <span>Freeze My Account</span>
+                        </button>
+                      </div>
+
+                      {showComplaintBox && (
+                        <div className="complaint-compose-box">
+                          <label htmlFor="declined-complaint-input" className="field-label">
+                            Explain your complaint or provide transaction details:
+                          </label>
+                          <textarea
+                            id="declined-complaint-input"
+                            className="standard-input"
+                            rows={3}
+                            maxLength={1000}
+                            value={complaintText}
+                            onChange={(e) => setComplaintText(e.target.value)}
+                            placeholder="e.g. This is my legitimate transfer to a family member. Please review and unblock."
+                          />
+                          <button
+                            type="button"
+                            className="primary-action-btn submit-complaint-btn"
+                            disabled={loading || !complaintText.trim()}
+                            onClick={() => submitCustomerComplaint("MESSAGE")}
+                          >
+                            {loading ? "Sending..." : "Submit Message to Fraud Review"}
+                          </button>
                         </div>
                       )}
                     </div>

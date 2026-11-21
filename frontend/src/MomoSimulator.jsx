@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { API_URL, adminFetch } from "./adminApi.js";
+import { detectActualDeviceName, detectDeviceLabel, formatDeviceDisplayName } from "./deviceInfo.js";
 import "./MomoSimulator.css";
 
 const TYPE_OPTIONS = [
@@ -59,6 +60,7 @@ export default function MomoSimulator() {
   const [customRecipientMode, setCustomRecipientMode] = useState(false);
   const [amount, setAmount] = useState("");
   const [deviceId, setDeviceId] = useState("");
+  const [actualDevice, setActualDevice] = useState("");
   const [scenarios, setScenarios] = useState([]);
 
   const [session, setSession] = useState(null);
@@ -86,6 +88,9 @@ export default function MomoSimulator() {
   const stepUpResendCountdown = `${String(Math.floor(stepUpResendSecondsLeft / 60)).padStart(2, "0")}:${String(stepUpResendSecondsLeft % 60).padStart(2, "0")}`;
 
   useEffect(() => {
+    detectActualDeviceName().then((name) => {
+      setActualDevice(name);
+    });
     fetch(`${API_URL}/api/momo/customers`)
       .then((response) => response.json())
       .then((data) => {
@@ -142,7 +147,7 @@ export default function MomoSimulator() {
     if (val === "__CUSTOM__") {
       setCustomWalletMode(true);
       setCustomerRef("0241234567");
-      setDeviceId(CUSTOM_DEVICE_DEFAULT);
+      setDeviceId(actualDevice || "Samsung Galaxy A53");
       setCustomRecipientMode(true);
       setRecipient("0249876543");
     } else {
@@ -186,6 +191,7 @@ export default function MomoSimulator() {
       amount: Number(amount),
       recipient,
       device_id: deviceId,
+      device_label: await detectDeviceLabel(),
       scenarios,
     };
 
@@ -542,9 +548,12 @@ export default function MomoSimulator() {
                   {customer ? (
                     <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
                       {customer.devices.map((d) => (
-                        <option key={d} value={d}>{d} (known)</option>
+                        <option key={d} value={d}>{formatDeviceDisplayName(d)}</option>
                       ))}
-                      <option value="HACKER-PHONE-999">New device (unregistered)</option>
+                      {actualDevice && (
+                        <option value={actualDevice}>Detected this device: {actualDevice}</option>
+                      )}
+                      <option value="HACKER-PHONE-999">New / Unregistered Device</option>
                     </select>
                   ) : (
                     <input
@@ -552,7 +561,7 @@ export default function MomoSimulator() {
                       required
                       value={deviceId}
                       onChange={(e) => setDeviceId(e.target.value)}
-                      placeholder="e.g. CUSTOM-DEVICE-001"
+                      placeholder={`e.g. ${actualDevice || "Samsung Galaxy S23"}`}
                       autoComplete="off"
                     />
                   )}

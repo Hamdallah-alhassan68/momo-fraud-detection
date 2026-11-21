@@ -325,6 +325,12 @@ export default function LiveDashboard() {
     load();
 
     const REFRESH_EVENTS = new Set(["stats", "transaction", "alert", "case"]);
+    const handleStatsRefresh = () => {
+      clearTimeout(refreshTimer.current);
+      refreshTimer.current = setTimeout(load, 100);
+    };
+    window.addEventListener("momo:stats-refresh", handleStatsRefresh);
+
     const unsubscribe = subscribeAdminEvents(
       (payload) => {
         if (REFRESH_EVENTS.has(payload.event)) {
@@ -336,6 +342,7 @@ export default function LiveDashboard() {
     );
 
     return () => {
+      window.removeEventListener("momo:stats-refresh", handleStatsRefresh);
       clearTimeout(refreshTimer.current);
       unsubscribe();
     };

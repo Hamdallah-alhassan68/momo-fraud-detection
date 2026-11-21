@@ -422,7 +422,7 @@ class AdminFraudCaseWorkflowTests(unittest.TestCase):
         self.assertFalse(cases[other_case_id]["account_frozen"])
         self.assertFalse(database.get_account_status("WALLET-2002")["frozen"])
 
-    def test_account_freeze_and_unfreeze_do_not_change_related_cases(self):
+    def test_account_freeze_and_unfreeze_automatically_resolves_related_cases(self):
         other_case_id = self._create_case(
             transaction_type="CASH_IN",
             risk_level="HIGH",
@@ -451,8 +451,8 @@ class AdminFraudCaseWorkflowTests(unittest.TestCase):
         self.assertEqual(
             {case["case_id"]: case["case_status"] for case in cases},
             {
-                self.case_id: "INVESTIGATING",
-                other_case_id: "OPEN",
+                self.case_id: "RESOLVED",
+                other_case_id: "RESOLVED",
             },
         )
         self.assertFalse(any(case["account_frozen"] for case in cases))
