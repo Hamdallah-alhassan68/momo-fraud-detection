@@ -261,6 +261,25 @@ export async function reverseGeocodeCoords(lat, lon) {
   const numLon = Number(lon);
   if (Number.isNaN(numLat) || Number.isNaN(numLon)) return null;
 
+  const approximateNairobiZones = [
+    [-1.2159, 36.8894, "USIU-A, Nairobi, Kenya"],
+    [-1.2177, 36.8847, "Qwetu, Roysambu, Nairobi, Kenya"],
+    [-1.2110, 36.8830, "Roysambu, Nairobi, Kenya"],
+    [-1.2230, 36.8960, "Kasarani, Nairobi, Kenya"],
+    [-1.2110, 36.8910, "Zimmerman, Nairobi, Kenya"],
+  ];
+  let nearestZone = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const [zoneLat, zoneLon, name] of approximateNairobiZones) {
+    const distance = Math.hypot(numLat - zoneLat, numLon - zoneLon);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestZone = name;
+    }
+  }
+  const approximateFallback =
+    nearestDistance <= 0.014 ? nearestZone : null;
+
   // 1. Primary: request a detailed reverse-geocoded label for the coordinates.
   try {
     const resp = await fetch(
@@ -355,7 +374,7 @@ export async function reverseGeocodeCoords(lat, lon) {
   } catch {
     // Offline or network timeout fallback
   }
-  return null;
+  return approximateFallback;
 }
 
 export function captureDeviceLocation({ timeout = 12000 } = {}) {

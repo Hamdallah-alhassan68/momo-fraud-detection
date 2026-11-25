@@ -82,6 +82,12 @@ class LocationResolutionTests(unittest.TestCase):
         coords = momo_simulator._normalize_location(-1.2194839, 36.8851247)
         self.assertEqual(coords, (-1.219484, 36.885125))
 
+    def test_approximate_named_location_resolves_nearby_nairobi_zone(self):
+        self.assertEqual(
+            geolocation.approximate_named_location(-1.2200, 36.8800),
+            "Qwetu, Roysambu, Nairobi, Kenya",
+        )
+
     def test_initiated_customer_session_persists_consent_and_reported_accuracy(self):
         with patch.object(
             app_module,

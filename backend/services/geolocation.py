@@ -10,6 +10,7 @@ import ipaddress
 import os
 import sys
 import threading
+import math
 
 import httpx
 
@@ -24,6 +25,38 @@ _DOC_AND_TEST_NETWORKS = (
     ipaddress.ip_network("198.18.0.0/15"),
     ipaddress.ip_network("100.64.0.0/10"),
 )
+
+_NAIROBI_APPROXIMATE_ZONES = (
+    (-1.2159, 36.8894, "USIU-A, Nairobi, Kenya"),
+    (-1.2177, 36.8847, "Qwetu, Roysambu, Nairobi, Kenya"),
+    (-1.2110, 36.8830, "Roysambu, Nairobi, Kenya"),
+    (-1.2230, 36.8960, "Kasarani, Nairobi, Kenya"),
+    (-1.2110, 36.8910, "Zimmerman, Nairobi, Kenya"),
+)
+
+
+def approximate_named_location(latitude: float, longitude: float) -> str | None:
+    """Return a nearby known Nairobi zone for simulator/demo coordinates."""
+    try:
+        lat = float(latitude)
+        lon = float(longitude)
+    except (TypeError, ValueError):
+        return None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+
+    nearest = None
+    nearest_distance = float("inf")
+    for zone_lat, zone_lon, name in _NAIROBI_APPROXIMATE_ZONES:
+        distance = math.hypot(lat - zone_lat, lon - zone_lon)
+        if distance < nearest_distance:
+            nearest_distance = distance
+            nearest = name
+
+    # Roughly 1.5 km; beyond this, do not guess a named place.
+    if nearest_distance <= 0.014:
+        return nearest
+    return None
 
 
 def _external_lookup_disabled() -> bool:
@@ -129,7 +162,12 @@ def reverse_geocode_coordinates(
             return _GEOCODE_CACHE[cache_key]
 
     if _external_lookup_disabled():
-        return None
+        resolved = approximate_named_location(lat, lon)
+        with _CACHE_LOCK:
+            if len(_GEOCODE_CACHE) >= 512:
+                _GEOCODE_CACHE.clear()
+            _GEOCODE_CACHE[cache_key] = resolved
+        return resolved
 
     resolved: str | None = None
     try:
@@ -168,6 +206,9 @@ def reverse_geocode_coordinates(
                 resolved = _format_bigdatacloud_address(resp.json())
         except Exception:
             resolved = None
+
+    if not resolved:
+        resolved = approximate_named_location(lat, lon)
 
     with _CACHE_LOCK:
         if len(_GEOCODE_CACHE) >= 512:
