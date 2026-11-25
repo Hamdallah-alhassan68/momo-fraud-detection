@@ -85,7 +85,7 @@ class LocationResolutionTests(unittest.TestCase):
     def test_approximate_named_location_resolves_nearby_nairobi_zone(self):
         self.assertEqual(
             geolocation.approximate_named_location(-1.2200, 36.8800),
-            "Qwetu, Roysambu, Nairobi, Kenya",
+            "Roysambu, Nairobi, Kenya",
         )
 
     def test_initiated_customer_session_persists_consent_and_reported_accuracy(self):

@@ -262,8 +262,8 @@ export async function reverseGeocodeCoords(lat, lon) {
   if (Number.isNaN(numLat) || Number.isNaN(numLon)) return null;
 
   const approximateNairobiZones = [
-    [-1.2159, 36.8894, "USIU-A, Nairobi, Kenya"],
-    [-1.2177, 36.8847, "Qwetu, Roysambu, Nairobi, Kenya"],
+    [-1.2159, 36.8894, "Roysambu, Nairobi, Kenya"],
+    [-1.2177, 36.8847, "Roysambu, Nairobi, Kenya"],
     [-1.2110, 36.8830, "Roysambu, Nairobi, Kenya"],
     [-1.2230, 36.8960, "Kasarani, Nairobi, Kenya"],
     [-1.2110, 36.8910, "Zimmerman, Nairobi, Kenya"],

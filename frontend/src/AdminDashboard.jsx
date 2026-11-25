@@ -55,31 +55,6 @@ function getFreezeReasonLabel(reason) {
   return reason || "Not recorded";
 }
 
-function getLocationLabel(location, latitude, longitude) {
-  const mappedArea = formatLocationDisplayName(location);
-  if (mappedArea !== "Location not captured") {
-    return `Nearby mapped area (approximate): ${mappedArea}`;
-  }
-  if (latitude != null && longitude != null) {
-    return "Mapped address unavailable";
-  }
-  return "Location not captured";
-}
-
-function getLocationAccuracyLabel(accuracy) {
-  if (accuracy == null || accuracy === "") {
-    return "Device-reported accuracy unavailable";
-  }
-  const meters = Number(accuracy);
-  return Number.isFinite(meters) && meters >= 0
-    ? `Device-reported accuracy ±${Math.round(meters)} m`
-    : "Device-reported accuracy unavailable";
-}
-
-function getLocationMapUrl(latitude, longitude) {
-  return `https://www.openstreetmap.org/?mlat=${encodeURIComponent(latitude)}&mlon=${encodeURIComponent(longitude)}#map=17/${encodeURIComponent(latitude)}/${encodeURIComponent(longitude)}`;
-}
-
 function AdminDashboard({ currentUser: propUser } = {}) {
   const currentUser = propUser || getCurrentUser();
   const role = currentUser?.role || "admin";
@@ -858,30 +833,7 @@ async function loadAlerts() {
                 {formatDeviceDisplayName(alert.device_id, alert.device_label)}
               </td>
               <td className="location-cell">
-                <span>
-                  {getLocationLabel(
-                    alert.location,
-                    alert.location_latitude,
-                    alert.location_longitude,
-                  )}
-                </span>
-                {alert.location_latitude != null && alert.location_longitude != null && (
-                  <small className="location-coords mono">
-                    <a
-                      href={getLocationMapUrl(
-                        alert.location_latitude,
-                        alert.location_longitude,
-                      )}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {Number(alert.location_latitude).toFixed(6)}°,{" "}
-                      {Number(alert.location_longitude).toFixed(6)}°
-                    </a>
-                    <br />
-                    {getLocationAccuracyLabel(alert.location_accuracy_meters)}
-                  </small>
-                )}
+                {formatLocationDisplayName(alert.location)}
               </td>
               <td>
                 {alert.created_at
@@ -1229,30 +1181,7 @@ async function loadAlerts() {
                 {formatDeviceDisplayName(caseItem.device_id, caseItem.device_label)}
               </td>
               <td className="location-cell">
-                <span>
-                  {getLocationLabel(
-                    caseItem.location,
-                    caseItem.location_latitude,
-                    caseItem.location_longitude,
-                  )}
-                </span>
-                {caseItem.location_latitude != null && caseItem.location_longitude != null && (
-                  <small className="location-coords mono">
-                    <a
-                      href={getLocationMapUrl(
-                        caseItem.location_latitude,
-                        caseItem.location_longitude,
-                      )}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {Number(caseItem.location_latitude).toFixed(6)}°,{" "}
-                      {Number(caseItem.location_longitude).toFixed(6)}°
-                    </a>
-                    <br />
-                    {getLocationAccuracyLabel(caseItem.location_accuracy_meters)}
-                  </small>
-                )}
+                {formatLocationDisplayName(caseItem.location)}
               </td>
               <td>
                 <span
@@ -1435,31 +1364,8 @@ async function loadAlerts() {
             <div>
               <span>Customer Location</span>
               <strong className="location-cell">
-                {getLocationLabel(
-                  selectedCase.location,
-                  selectedCase.location_latitude,
-                  selectedCase.location_longitude,
-                )}
+                {formatLocationDisplayName(selectedCase.location)}
               </strong>
-              {selectedCase.location_latitude != null && selectedCase.location_longitude != null && (
-                <small className="location-coords mono">
-                  {Number(selectedCase.location_latitude).toFixed(6)}°, {Number(selectedCase.location_longitude).toFixed(6)}°{" "}
-                  <a
-                    href={getLocationMapUrl(
-                      selectedCase.location_latitude,
-                      selectedCase.location_longitude,
-                    )}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    (Map)
-                  </a>
-                  <br />
-                  {getLocationAccuracyLabel(
-                    selectedCase.location_accuracy_meters,
-                  )}
-                </small>
-              )}
             </div>
             <div>
               <span>Account status</span>
