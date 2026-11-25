@@ -1219,7 +1219,20 @@ td small {
 .location-cell {
   font-size: 0.85rem;
   color: #334155;
-  white-space: nowrap;
+  white-space: normal;
+  min-width: 140px;
+}
+
+.location-coords {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.74rem;
+  color: #64748b;
+}
+
+.location-coords a {
+  color: #0284c7;
+  text-decoration: underline;
 }
 
 .device-cell {

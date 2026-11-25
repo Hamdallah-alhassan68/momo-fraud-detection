@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { adminFetch, API_URL, subscribeAdminEvents } from "./adminApi.js";
-import { detectDeviceLabel } from "./deviceInfo.js";
+import { captureDeviceLocation, detectDeviceLabel } from "./deviceInfo.js";
 import "./MTNDisbursement.css";
 
 // Clean SVG Icons (replacing all emojis for enterprise-grade styling)
@@ -200,7 +200,6 @@ export default function MTNDisbursement() {
     gps_coordinates: null,
   }));
   const [locationStatus, setLocationStatus] = useState("prompt");
-  const [locationUpdatedAt, setLocationUpdatedAt] = useState(0);
 
   // Verified Recipient Inquiry (standard MoMo name inquiry without private ID leakage)
   const [recipientName, setRecipientName] = useState("");
@@ -331,13 +330,12 @@ export default function MTNDisbursement() {
   ]);
 
   // Configuration
-  const [configuration, setConfiguration] = useState({
+  const [_configuration, setConfiguration] = useState({
     currency: "GHS",
     environment: "sandbox",
     maximumAmount: null,
   });
-  const displayCurrency =
-    transactionType === "TRANSFER" ? configuration.currency : "GHS";
+  const displayCurrency = "GHS";
   const stepUpSecondsLeft = stepUpCodeExpiresAt
     ? Math.max(0, Math.ceil((stepUpCodeExpiresAt - stepUpClockNow) / 1000))
     : 0;
@@ -399,107 +397,52 @@ export default function MTNDisbursement() {
     return () => clearTimeout(timer);
   }, [recipientNumber]);
 
-  // Check location permission state without requesting access.
+  const requestDeviceLocation = useCallback(async () => {
+    setLocationStatus("requesting");
+    const { coords, status } = await captureDeviceLocation();
+    if (coords) {
+      setTelemetry((current) => ({
+        ...current,
+        gps_coordinates: coords,
+        location_name: coords.location_name || current.location_name,
+      }));
+      setLocationStatus("granted");
+      return coords;
+    }
+    setTelemetry((current) => ({
+      ...current,
+      gps_coordinates: null,
+      location_name: null,
+    }));
+    setLocationStatus(status);
+    return null;
+  }, []);
+
+  // Check permission state and capture coordinates only when sharing is enabled.
   const detectClientTelemetry = useCallback(async () => {
-    if (!navigator.permissions?.query) return;
+    if (!navigator.permissions?.query) {
+      if (shareCoarseLocation) {
+        void requestDeviceLocation();
+      }
+      return;
+    }
     try {
       const permission = await navigator.permissions.query({
         name: "geolocation",
       });
       setLocationStatus(permission.state);
-    } catch {
-      setLocationStatus("prompt");
-    }
-  }, []);
-
-  async function reverseGeocodeCoords(lat, lon) {
-    try {
-      const resp = await fetch(
-        `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`
-      );
-      if (resp.ok) {
-        const data = await resp.json();
-        const admin = data.localityInfo?.administrative || [];
-        let district = "";
-        for (const item of admin) {
-          const desc = (item.description || "").toLowerCase();
-          if (
-            desc.includes("sub-count") ||
-            desc.includes("division") ||
-            [6, 7, 8].includes(item.adminLevel)
-          ) {
-            district = (item.name || "").replace(
-              / division| location| sublocation/gi,
-              "",
-            );
-            break;
-          }
-        }
-        const city =
-          data.city || data.locality || data.principalSubdivision || "";
-        const country = data.countryName || "";
-        const parts = Array.from(
-          new Set([district, city, country].filter(Boolean)),
-        );
-        if (parts.length > 0) return parts.join(", ");
+      if (shareCoarseLocation && permission.state !== "denied") {
+        void requestDeviceLocation();
       }
     } catch {
-      // offline or network timeout fallback
+      setLocationStatus("prompt");
+      if (shareCoarseLocation) {
+        void requestDeviceLocation();
+      }
     }
-    return null;
-  }
-
-  function requestDeviceLocation() {
-    if (!navigator.geolocation) {
-      setLocationStatus("unavailable");
-      return Promise.resolve(null);
-    }
-    setLocationStatus("requesting");
-    return new Promise((resolve) => {
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          const rawLat = position.coords.latitude;
-          const rawLon = position.coords.longitude;
-          const coordinates = {
-            latitude: Number(rawLat.toFixed(5)),
-            longitude: Number(rawLon.toFixed(5)),
-          };
-          const locName = await reverseGeocodeCoords(rawLat, rawLon);
-          if (locName) {
-            coordinates.location_name = locName;
-          }
-          setTelemetry((current) => ({
-            ...current,
-            gps_coordinates: coordinates,
-            location_name: locName || current.location_name,
-          }));
-          setLocationUpdatedAt(Date.now());
-          setLocationStatus("granted");
-          resolve(coordinates);
-        },
-        (error) => {
-          setTelemetry((current) => ({
-            ...current,
-            gps_coordinates: null,
-            location_name: null,
-          }));
-          setLocationStatus(
-            error.code === error.PERMISSION_DENIED ? "denied" : "unavailable",
-          );
-          resolve(null);
-        },
-        { timeout: 10000, maximumAge: 0 },
-      );
-    });
-  }
+  }, [requestDeviceLocation, shareCoarseLocation]);
 
   async function ensureCurrentLocation() {
-    if (
-      telemetry.gps_coordinates &&
-      Date.now() - locationUpdatedAt < 5 * 60 * 1000
-    ) {
-      return telemetry.gps_coordinates;
-    }
     return requestDeviceLocation();
   }
 
@@ -509,7 +452,7 @@ export default function MTNDisbursement() {
       if (res.ok) {
         const data = await res.json();
         setConfiguration({
-          currency: data.currency || "GHS",
+          currency: "GHS",
           environment: data.environment || "production",
           maximumAmount: data.maximum_amount,
         });
@@ -590,6 +533,9 @@ export default function MTNDisbursement() {
     setLoading(true);
     setError("");
     try {
+      const location = shareCoarseLocation
+        ? await ensureCurrentLocation()
+        : null;
       const response = await fetch(`${API_URL}/api/momo/customer/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -598,6 +544,13 @@ export default function MTNDisbursement() {
           pin: loginPin,
           device_id: getBrowserDeviceId(),
           device_label: await detectDeviceLabel(),
+          location_consent: Boolean(shareCoarseLocation && location),
+          ...(location && {
+            location_latitude: location.latitude,
+            location_longitude: location.longitude,
+            location_accuracy_meters: location.accuracy,
+            location_name: location.location_name || telemetry.location_name,
+          }),
         }),
       });
       const data = await response.json();
@@ -632,12 +585,13 @@ export default function MTNDisbursement() {
           body: JSON.stringify({
             ...registration,
             privacy_notice_accepted: privacyNoticeAccepted,
-            location_consent: shareCoarseLocation,
+            location_consent: Boolean(shareCoarseLocation && location),
             device_id: getBrowserDeviceId(),
             device_label: await detectDeviceLabel(),
             ...(location && {
               location_latitude: location.latitude,
               location_longitude: location.longitude,
+              location_accuracy_meters: location.accuracy,
               location_name: location.location_name || telemetry.location_name,
             }),
           }),
@@ -658,7 +612,6 @@ export default function MTNDisbursement() {
         pin: "",
           });
       setPrivacyNoticeAccepted(false);
-      setShareCoarseLocation(false);
       setCustomerView("signin");
     } catch (registrationError) {
       setError(registrationError.message || "Could not create sandbox wallet.");
@@ -680,7 +633,6 @@ export default function MTNDisbursement() {
     setSession(null);
     setStep("form");
     setPrivacyNoticeAccepted(false);
-    setShareCoarseLocation(false);
     setError("");
     setVerificationEmail("");
     setVerificationCode("");
@@ -755,7 +707,7 @@ export default function MTNDisbursement() {
         transaction_type: transactionType,
         amount: parsedAmount,
         recipient: recipientNumber.trim(),
-        location_consent: shareCoarseLocation,
+        location_consent: Boolean(shareCoarseLocation && location),
         device_id: getBrowserDeviceId(),
         device_label: await detectDeviceLabel(),
         scenario: "NORMAL",
@@ -766,6 +718,7 @@ export default function MTNDisbursement() {
       if (location) {
         payload.location_latitude = location.latitude;
         payload.location_longitude = location.longitude;
+        payload.location_accuracy_meters = location.accuracy;
         if (location.location_name || telemetry.location_name) {
           payload.location_name = location.location_name || telemetry.location_name;
         }
@@ -795,7 +748,8 @@ export default function MTNDisbursement() {
       }
       setStep("auth");
     } catch (err) {
-      setError(err.message || "Failed to initiate transfer.");
+      const msg = (err.message || "Failed to initiate transfer.").replace(/\bEUR\b/g, "GHS");
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -869,7 +823,7 @@ export default function MTNDisbursement() {
         }
       }
     } catch (err) {
-      const message = err.message || "Incorrect PIN or authorization failure.";
+      const message = (err.message || "Incorrect PIN or authorization failure.").replace(/\bEUR\b/g, "GHS");
       if (/your wallet is frozen/i.test(message)) {
         const freezeReason = /ADMIN_MANUAL|manual administrator freeze/i.test(
           message,
@@ -1905,10 +1859,13 @@ export default function MTNDisbursement() {
                         }
                       />
                       <span>
-                        Optional: share coarse location for this enrollment to
-                        test location-risk signals. If selected, the browser
-                        will request location permission; otherwise no GPS
-                        location is requested or sent.
+                        Share device GPS location for this enrollment to
+                        verify location-risk signals (optional).
+                        {telemetry.location_name
+                          ? ` Nearby mapped area: ${telemetry.location_name}.`
+                          : locationStatus === "denied"
+                            ? " Location access is blocked; continuing without GPS."
+                            : ""}
                       </span>
                     </label>
                     <button type="submit" className="primary-action-btn" disabled={loading}>
@@ -2050,12 +2007,19 @@ export default function MTNDisbursement() {
                     }
                   />
                   <span>
-                    Optional: share coarse location for this transaction to
-                    test location-risk signals. If selected, the browser will
-                    request location permission; otherwise no GPS location is
-                    requested or sent.
-                    {locationStatus === "denied" &&
-                      " Location access is blocked; you can continue without it."}
+                    Share device GPS location for this transaction to verify
+                    location-risk signals (optional).
+                    {telemetry.location_name
+                      ? ` Nearby mapped area: ${telemetry.location_name}${
+                          telemetry.gps_coordinates
+                            ? `; coordinates ${telemetry.gps_coordinates.latitude.toFixed(6)}°, ${telemetry.gps_coordinates.longitude.toFixed(6)}° (reported accuracy ±${telemetry.gps_coordinates.accuracy ?? "unknown"} m)`
+                            : ""
+                        }.`
+                      : telemetry.gps_coordinates
+                        ? ` Coordinates ${telemetry.gps_coordinates.latitude.toFixed(6)}°, ${telemetry.gps_coordinates.longitude.toFixed(6)}° (reported accuracy ±${telemetry.gps_coordinates.accuracy ?? "unknown"} m).`
+                        : locationStatus === "denied"
+                          ? " Location access is blocked; you can continue without it."
+                          : ""}
                   </span>
                 </label>
 

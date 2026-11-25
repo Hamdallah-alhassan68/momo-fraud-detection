@@ -256,66 +256,166 @@ export function formatDeviceDisplayName(deviceId, deviceLabel) {
   return resolveModelCode(id) || id;
 }
 
-export function formatLocationDisplayName(location) {
-  if (!location) return "—";
-  const str = String(location).trim();
-  if (!str || str === "null" || str === "undefined") return "—";
+export async function reverseGeocodeCoords(lat, lon) {
+  const numLat = Number(lat);
+  const numLon = Number(lon);
+  if (Number.isNaN(numLat) || Number.isNaN(numLon)) return null;
 
-  // If the location is already a human-readable address/place name without "Location (", use it directly!
-  const hasCoordinatePattern =
-    str.match(/Location\s*\(\s*(-?\d+\.?\d*)[°\s]*,\s*(-?\d+\.?\d*)[°\s]*\)/i) ||
-    str.match(/\(\s*(-?\d+\.?\d*)[°\s]*,\s*(-?\d+\.?\d*)[°\s]*\)/);
+  // 1. Primary: request a detailed reverse-geocoded label for the coordinates.
+  try {
+    const resp = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(
+        numLat.toFixed(6),
+      )}&lon=${encodeURIComponent(numLon.toFixed(6))}&zoom=18&addressdetails=1`,
+      { headers: { "Accept-Language": "en" } },
+    );
+    if (resp.ok) {
+      const data = await resp.json();
+      const addr = data.address || {};
+      const road = addr.road || addr.pedestrian || addr.footway || "";
+      const house = addr.house_number || "";
+      const street = house && road ? `${house} ${road}` : road;
+      const area =
+        addr.neighbourhood ||
+        addr.suburb ||
+        addr.quarter ||
+        addr.residential ||
+        addr.city_district ||
+        "";
+      const city =
+        addr.city ||
+        addr.town ||
+        addr.village ||
+        addr.municipality ||
+        addr.county ||
+        "";
+      const region = addr.state || addr.region || "";
+      const country = addr.country || "";
 
-  if (!hasCoordinatePattern && !str.toLowerCase().startsWith("location")) {
-    return str;
+      const parts = Array.from(
+        new Set(
+          [street, area, city, city ? "" : region, country]
+            .map((part) => String(part || "").trim())
+            .filter(Boolean),
+        ),
+      );
+      if (parts.length > 0) {
+        return parts.slice(0, 4).join(", ");
+      }
+      if (data.display_name) {
+        return String(data.display_name)
+          .split(",")
+          .slice(0, 4)
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .join(", ");
+      }
+    }
+  } catch {
+    // Fall through to BigDataCloud
   }
 
-  // Parse raw coordinate patterns like "Location (-1.22°, 36.88°)" or "(-1.22, 36.88)"
-  const match = hasCoordinatePattern;
-  if (match) {
-    const lat = parseFloat(match[1]);
-    const lon = parseFloat(match[2]);
-    if (!isNaN(lat) && !isNaN(lon)) {
-      // Kenya / Nairobi localities
-      if (-1.235 <= lat && lat <= -1.210 && 36.870 <= lon && lon <= 36.905) {
-        return "Roysambu, Kasarani, Nairobi";
+  // 2. Fallback: BigDataCloud reverse geocoding
+  try {
+    const resp = await fetch(
+      `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(
+        numLat.toFixed(6),
+      )}&longitude=${encodeURIComponent(numLon.toFixed(6))}&localityLanguage=en`,
+    );
+    if (resp.ok) {
+      const data = await resp.json();
+      const admin = data.localityInfo?.administrative || [];
+      let district = "";
+      for (const item of admin) {
+        const desc = (item.description || "").toLowerCase();
+        if (
+          desc.includes("sub-count") ||
+          desc.includes("division") ||
+          [6, 7, 8].includes(item.adminLevel)
+        ) {
+          district = (item.name || "").replace(
+            / division| location| sublocation/gi,
+            "",
+          );
+          if (district) break;
+        }
       }
-      if (-1.255 <= lat && lat <= -1.185 && 36.830 <= lon && lon <= 36.940) {
-        return "Kasarani, Nairobi";
-      }
-      if (-1.280 <= lat && lat <= -1.250 && 36.780 <= lon && lon <= 36.830) {
-        return "Westlands, Nairobi";
-      }
-      if (-1.310 <= lat && lat <= -1.275 && 36.760 <= lon && lon <= 36.810) {
-        return "Kilimani, Nairobi";
-      }
-      if (-1.300 <= lat && lat <= -1.270 && 36.810 <= lon && lon <= 36.845) {
-        return "CBD, Nairobi";
-      }
-      if (-1.400 <= lat && lat <= -1.150 && 36.650 <= lon && lon <= 37.100) {
-        return "Nairobi City, Kenya";
-      }
-      if (-4.100 <= lat && lat <= -3.950 && 39.600 <= lon && lon <= 39.750) {
-        return "Mombasa, Kenya";
-      }
-      if (-0.150 <= lat && lat <= 0.050 && 34.700 <= lon && lon <= 34.850) {
-        return "Kisumu, Kenya";
-      }
-      // Ghana localities
-      if (5.50 <= lat && lat <= 5.70 && -0.25 <= lon && lon <= -0.12) {
-        return "East Legon, Accra";
-      }
-      if (5.48 <= lat && lat <= 5.75 && -0.35 <= lon && lon <= -0.10) {
-        return "Accra, Greater Accra";
-      }
-      if (5.60 <= lat && lat <= 5.75 && -0.05 <= lon && lon <= 0.08) {
-        return "Tema, Greater Accra";
-      }
-      if (6.55 <= lat && lat <= 6.85 && -1.80 <= lon && lon <= -1.45) {
-        return "Kumasi, Ashanti";
-      }
-      // Other coordinates: format cleanly with degrees
-      return `${lat.toFixed(3)}°, ${lon.toFixed(3)}°`;
+      const city =
+        data.city || data.locality || data.principalSubdivision || "";
+      const country = data.countryName || "";
+      const parts = Array.from(
+        new Set(
+          [district, city, country]
+            .map((part) => String(part || "").trim())
+            .filter(Boolean),
+        ),
+      );
+      if (parts.length > 0) return parts.join(", ");
+    }
+  } catch {
+    // Offline or network timeout fallback
+  }
+  return null;
+}
+
+export function captureDeviceLocation({ timeout = 12000 } = {}) {
+  if (typeof navigator === "undefined" || !navigator.geolocation) {
+    return Promise.resolve({ coords: null, status: "unavailable" });
+  }
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const rawLat = position.coords.latitude;
+        const rawLon = position.coords.longitude;
+        const coordinates = {
+          latitude: Number(rawLat.toFixed(6)),
+          longitude: Number(rawLon.toFixed(6)),
+          accuracy:
+            Number.isFinite(position.coords.accuracy) &&
+            position.coords.accuracy >= 0
+              ? Math.round(position.coords.accuracy)
+              : null,
+        };
+        const locName = await reverseGeocodeCoords(rawLat, rawLon);
+        if (locName) {
+          coordinates.location_name = locName;
+        }
+        resolve({ coords: coordinates, status: "granted" });
+      },
+      (error) => {
+        resolve({
+          coords: null,
+          status:
+            error.code === error.PERMISSION_DENIED ? "denied" : "unavailable",
+        });
+      },
+      { enableHighAccuracy: true, timeout, maximumAge: 0 },
+    );
+  });
+}
+
+export function formatLocationDisplayName(location) {
+  if (!location) return "Location not captured";
+  const str = String(location).trim();
+  if (
+    !str ||
+    str === "null" ||
+    str === "undefined" ||
+    str === "Primary Registered Location"
+  ) {
+    return "Location not captured";
+  }
+
+  const coordinateMatch =
+    str.match(
+      /Location\s*\(\s*(-?\d+\.?\d*)[°\s]*,\s*(-?\d+\.?\d*)[°\s]*\)/i,
+    ) || str.match(/^\(\s*(-?\d+\.?\d*)[°\s]*,\s*(-?\d+\.?\d*)[°\s]*\)$/);
+
+  if (coordinateMatch) {
+    const lat = parseFloat(coordinateMatch[1]);
+    const lon = parseFloat(coordinateMatch[2]);
+    if (!Number.isNaN(lat) && !Number.isNaN(lon)) {
+      return `${lat.toFixed(5)}°, ${lon.toFixed(5)}°`;
     }
   }
 

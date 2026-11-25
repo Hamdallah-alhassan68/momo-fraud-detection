@@ -437,6 +437,7 @@ def initiate_transaction(
     live_mtn: bool = False,
     location_latitude=None,
     location_longitude=None,
+    location_accuracy_meters=None,
     otp_sms_sender: Callable[[str, str, dict], bool] | None = None,
     device_label=None,
     location_name=None,
@@ -521,6 +522,10 @@ def initiate_transaction(
         str(ip_address or customer["base_ip"]).strip()
     )
     location = _normalize_location(location_latitude, location_longitude)
+    if location and not (str(location_name or "").strip()):
+        from services.geolocation import reverse_geocode_coordinates
+
+        location_name = reverse_geocode_coordinates(location[0], location[1])
 
     if verification == "OTP":
         if not customer.get("sandbox_profile"):
@@ -567,6 +572,7 @@ def initiate_transaction(
         live_mtn=1 if live_mtn else 0,
         location_latitude=location[0] if location else None,
         location_longitude=location[1] if location else None,
+        location_accuracy_meters=location_accuracy_meters,
         otp_expires_at=otp_expires_at,
         device_label=device_label,
         location_name=location_name,
@@ -620,7 +626,7 @@ def _normalize_location(latitude, longitude):
         raise ValueError("Location coordinates must be valid numbers.") from error
     if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
         raise ValueError("Location coordinates are outside valid ranges.")
-    return round(latitude, 2), round(longitude, 2)
+    return round(latitude, 6), round(longitude, 6)
 
 
 def _distance_km(first, second):
@@ -1013,6 +1019,9 @@ def verify_transaction(
     }
     if location:
         transaction["location_latitude"], transaction["location_longitude"] = location
+        transaction["location_accuracy_meters"] = session.get(
+            "location_accuracy_meters"
+        )
     if session.get("location_name"):
         transaction["location_name"] = session["location_name"]
 

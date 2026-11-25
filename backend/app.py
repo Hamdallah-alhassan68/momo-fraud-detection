@@ -2,6 +2,7 @@
 
 import json
 import ipaddress
+import math
 import logging
 import os
 import queue
@@ -42,6 +43,7 @@ from database.database import (
     get_analytics_data,
     get_audit_logs,
     get_connection,
+    _resolve_case_location,
     get_dashboard_stats,
     get_fraud_cases,
     get_recipient_history,
@@ -59,6 +61,7 @@ from database.database import (
 from services import auth, events, momo_simulator
 from services.adaptive_intelligence import build_monitoring, record_drift_baseline
 from services.fraud_detector import fraud_detector
+from services.geolocation import reverse_geocode_coordinates
 from services.mtn_collection import (
     MtnCollectionClient,
     MtnCollectionError,
@@ -591,6 +594,8 @@ def momo_customer_login(
 
     customer_phone = normalized_phone
     location = _validate_customer_location(body)
+    location_accuracy_meters = _validate_customer_location_accuracy(body, location)
+    location_name = _resolve_location_name(location)
     device_id = _validate_device_id(body.get("device_id"))
     if device_id:
         record_customer_security_signal(
@@ -600,7 +605,9 @@ def momo_customer_login(
             ip_address=_client_ip(request),
             location_latitude=location[0] if location else None,
             location_longitude=location[1] if location else None,
+            location_accuracy_meters=location_accuracy_meters,
             location_consent=body.get("location_consent") is True,
+            location_name=location_name,
         )
     token = auth.create_access_token(
         user_id=0,
@@ -663,15 +670,23 @@ def _validate_device_label(value):
 def _validate_customer_location(body):
     latitude = body.get("location_latitude")
     longitude = body.get("location_longitude")
+    accuracy = body.get("location_accuracy_meters")
     if body.get("location_consent") is not True:
-        if latitude is not None or longitude is not None:
+        if latitude is not None or longitude is not None or accuracy is not None:
             raise HTTPException(
                 status_code=400,
                 detail="Location coordinates require explicit location consent.",
             )
         return None
     if latitude is None or longitude is None:
+        if accuracy is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Location accuracy requires consented GPS coordinates.",
+            )
         return None
+    if isinstance(latitude, bool) or isinstance(longitude, bool):
+        raise HTTPException(status_code=400, detail="Location coordinates are invalid.")
     try:
         latitude = float(latitude)
         longitude = float(longitude)
@@ -680,9 +695,43 @@ def _validate_customer_location(body):
             status_code=400,
             detail="Location coordinates must be valid numbers.",
         ) from error
-    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+    if (
+        not math.isfinite(latitude)
+        or not math.isfinite(longitude)
+        or not (-90 <= latitude <= 90 and -180 <= longitude <= 180)
+    ):
         raise HTTPException(status_code=400, detail="Location coordinates are invalid.")
-    return round(latitude, 2), round(longitude, 2)
+    return round(latitude, 6), round(longitude, 6)
+
+
+def _validate_customer_location_accuracy(body, location):
+    accuracy = body.get("location_accuracy_meters")
+    if accuracy is None:
+        return None
+    if location is None or isinstance(accuracy, bool):
+        raise HTTPException(
+            status_code=400,
+            detail="Location accuracy requires consented GPS coordinates.",
+        )
+    try:
+        accuracy = float(accuracy)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=400,
+            detail="Location accuracy must be a valid number.",
+        ) from error
+    if not math.isfinite(accuracy) or accuracy < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Location accuracy is invalid.",
+        )
+    return round(accuracy, 1)
+
+
+def _resolve_location_name(location):
+    if location:
+        return reverse_geocode_coordinates(location[0], location[1])
+    return None
 
 
 def _client_ip(request: Request) -> str | None:
@@ -772,6 +821,8 @@ def momo_customer_register(
             detail="Choose a security code that is different from your wallet PIN.",
         )
     location = _validate_customer_location(body)
+    location_accuracy_meters = _validate_customer_location_accuracy(body, location)
+    location_name = _resolve_location_name(location)
     device_id = _validate_device_id(body.get("device_id"))
     device_label = _validate_device_label(body.get("device_label"))
     if not device_id:
@@ -804,9 +855,10 @@ def momo_customer_register(
             ip_address=_client_ip(request),
             location_latitude=location[0] if location else None,
             location_longitude=location[1] if location else None,
+            location_accuracy_meters=location_accuracy_meters,
             trusted=True,
             location_consent=body.get("location_consent") is True,
-            location_name=str(body.get("location_name") or "").strip() or None,
+            location_name=location_name,
         )
     except INTEGRITY_ERRORS as error:
         raise HTTPException(
@@ -1781,6 +1833,10 @@ def momo_transaction_initiate(
                 ),
             )
         location = _validate_customer_location(body)
+        location_accuracy_meters = _validate_customer_location_accuracy(
+            body, location
+        )
+        location_name = _resolve_location_name(location)
         device_id = _validate_device_id(body.get("device_id"))
         device_label = _validate_device_label(body.get("device_label"))
         if is_customer_session and not device_id:
@@ -1801,6 +1857,7 @@ def momo_transaction_initiate(
             location_longitude=(
                 location[1] if location else None
             ),
+            location_accuracy_meters=location_accuracy_meters,
             device_label=device_label,
             scenario=(
                 body.get("scenarios")
@@ -1809,7 +1866,7 @@ def momo_transaction_initiate(
             ),
             live_mtn=live_mtn,
             otp_sms_sender=send_transaction_otp_sms,
-            location_name=str(body.get("location_name") or "").strip() or None,
+            location_name=location_name,
         )
         if is_customer_session:
             record_customer_security_signal(
@@ -1820,8 +1877,9 @@ def momo_transaction_initiate(
                 ip_address=client_ip,
                 location_latitude=location[0] if location else None,
                 location_longitude=location[1] if location else None,
+                location_accuracy_meters=location_accuracy_meters,
                 location_consent=body.get("location_consent") is True,
-                location_name=str(body.get("location_name") or "").strip() or None,
+                location_name=location_name,
             )
             for private_signal in (
                 "ip_address",
@@ -2848,8 +2906,10 @@ def fraud_alerts():
         cursor.execute(
             """
             SELECT a.id AS alert_id, a.transaction_id, t.transaction_reference,
-                   t.ip_address, t.device_id, t.device_label, a.severity, a.status, a.reason,
-                   a.created_at
+                   t.ip_address, t.device_id, t.device_label,
+                   t.location_latitude, t.location_longitude, t.location_name,
+                   t.location_accuracy_meters,
+                   a.severity, a.status, a.reason, a.created_at
             FROM fraud_alerts a
             JOIN transactions t ON t.id = a.transaction_id
             ORDER BY a.created_at DESC
@@ -2857,6 +2917,7 @@ def fraud_alerts():
         )
         alerts = [dict(row) for row in cursor.fetchall()]
         for alert in alerts:
+            alert["location"] = _resolve_case_location(alert)
             reason = alert.get("reason")
             if reason:
                 try:

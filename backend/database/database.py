@@ -1,6 +1,7 @@
 import hashlib
 import hmac as hmac_module
 import logging
+import math
 import os
 import re
 import secrets
@@ -655,6 +656,7 @@ def initialize_database():
             ip_address TEXT,
             location_latitude REAL,
             location_longitude REAL,
+            location_accuracy_meters REAL,
             location_consent INTEGER NOT NULL DEFAULT 0,
             trusted INTEGER NOT NULL DEFAULT 0,
             observed_at TEXT NOT NULL
@@ -782,10 +784,15 @@ def initialize_database():
     _ensure_column(connection, "transactions", "location_latitude", "REAL")
     _ensure_column(connection, "transactions", "location_longitude", "REAL")
     _ensure_column(connection, "transactions", "location_name", "TEXT")
+    _ensure_column(connection, "transactions", "location_accuracy_meters", "REAL")
     _ensure_column(connection, "momo_sessions", "location_latitude", "REAL")
     _ensure_column(connection, "momo_sessions", "location_longitude", "REAL")
     _ensure_column(connection, "momo_sessions", "location_name", "TEXT")
+    _ensure_column(connection, "momo_sessions", "location_accuracy_meters", "REAL")
     _ensure_column(connection, "customer_security_signals", "location_name", "TEXT")
+    _ensure_column(
+        connection, "customer_security_signals", "location_accuracy_meters", "REAL"
+    )
     _ensure_column(connection, "momo_sessions", "risk_signals", "TEXT")
     _ensure_column(connection, "momo_sessions", "assessment_reasons", "TEXT")
     _ensure_column(connection, "momo_sessions", "otp_expires_at", "TEXT")
@@ -991,10 +998,11 @@ def create_transaction(transaction):
                 mtn_financial_id,
                 location_latitude,
                 location_longitude,
+                location_accuracy_meters,
                 device_label,
                 location_name
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             """,
             (
@@ -1039,6 +1047,7 @@ def create_transaction(transaction):
                 transaction.get("mtn_financial_id"),
                 transaction.get("location_latitude"),
                 transaction.get("location_longitude"),
+                transaction.get("location_accuracy_meters"),
                 transaction.get("device_label"),
                 transaction.get("location_name")
             )
@@ -1305,108 +1314,26 @@ def create_audit_log(
     connection.close()
 
 
-_KNOWN_KYC_LOCATIONS = {
-    "0241001001": "East Legon, Accra",
-    "WALLET-1001": "East Legon, Accra",
-    "0242002002": "Cantonments, Accra",
-    "WALLET-1002": "Cantonments, Accra",
-    "0243003003": "Adum, Kumasi",
-    "WALLET-1003": "Adum, Kumasi",
-    "233241234567": "Osu, Accra",
-    "WALLET-2001": "Osu, Accra",
-    "0249876543": "Airport Residential, Accra",
-    "WALLET-2002": "Airport Residential, Accra",
-    "0551122334": "Dansoman, Accra",
-    "WALLET-2003": "Dansoman, Accra",
-    "0204455667": "Dzorwulu, Accra",
-    "WALLET-2004": "Dzorwulu, Accra",
-    "0547788990": "Ridge, Accra",
-    "WALLET-2005": "Ridge, Accra",
-    "0244112233": "Achimota, Accra",
-    "WALLET-2006": "Achimota, Accra",
-    "0559988776": "Madina, Accra",
-    "WALLET-2007": "Madina, Accra",
-    "0201122334": "Legon, Accra",
-    "WALLET-2008": "Legon, Accra",
-    "0543322110": "Tema Community 1, Tema",
-    "WALLET-2009": "Tema Community 1, Tema",
-    "0246655443": "Spintex Road, Accra",
-    "WALLET-2010": "Spintex Road, Accra",
-    "0554433221": "Lapaz, Accra",
-    "WALLET-2011": "Lapaz, Accra",
-    "W-7": "Accra Central, Accra",
-    "WALLET-1001": "Kasarani, Nairobi",
-    "WALLET-1002": "Roysambu, Nairobi",
-    "WALLET-1003": "Westlands, Nairobi",
-    "WALLET-1004": "Kilimani, Nairobi",
-    "WALLET-9001": "CBD, Nairobi",
-    "0240723836": "Kasarani, Nairobi",
-}
-
-
 def _resolve_case_location(case):
-    if case.get("location_name"):
-        return str(case["location_name"]).strip()
-
     lat = case.get("location_latitude")
     lon = case.get("location_longitude")
     if lat is not None and lon is not None:
         try:
             f_lat = float(lat)
             f_lon = float(lon)
-            # Kenya - Specific Nairobi sub-regions
-            if -1.235 <= f_lat <= -1.210 and 36.870 <= f_lon <= 36.905:
-                return "Roysambu, Kasarani, Nairobi"
-            elif -1.255 <= f_lat <= -1.185 and 36.830 <= f_lon <= 36.940:
-                return "Kasarani, Nairobi"
-            elif -1.280 <= f_lat <= -1.250 and 36.780 <= f_lon <= 36.830:
-                return "Westlands, Nairobi"
-            elif -1.310 <= f_lat <= -1.275 and 36.760 <= f_lon <= 36.810:
-                return "Kilimani, Nairobi"
-            elif -1.300 <= f_lat <= -1.270 and 36.810 <= f_lon <= 36.845:
-                return "CBD, Nairobi"
-            elif -1.400 <= f_lat <= -1.150 and 36.650 <= f_lon <= 37.100:
-                return "Nairobi City, Kenya"
-            elif -4.100 <= f_lat <= -3.950 and 39.600 <= f_lon <= 39.750:
-                return "Mombasa, Kenya"
-            elif -0.150 <= f_lat <= 0.050 and 34.700 <= f_lon <= 34.850:
-                return "Kisumu, Kenya"
-            elif -0.350 <= f_lat <= -0.200 and 36.000 <= f_lon <= 36.150:
-                return "Nakuru, Kenya"
-            elif -4.8 <= f_lat <= 5.0 and 33.8 <= f_lon <= 41.9:
-                return "Nairobi, Kenya"
-            # Ghana
-            elif 5.50 <= f_lat <= 5.70 and -0.25 <= f_lon <= -0.12:
-                return "East Legon, Accra"
-            elif 5.48 <= f_lat <= 5.75 and -0.35 <= f_lon <= -0.10:
-                return "Accra, Greater Accra"
-            elif 5.60 <= f_lat <= 5.75 and -0.05 <= f_lon <= 0.08:
-                return "Tema, Greater Accra"
-            elif 6.55 <= f_lat <= 6.85 and -1.80 <= f_lon <= -1.45:
-                return "Kumasi, Ashanti"
-            elif 9.25 <= f_lat <= 9.60 and -1.00 <= f_lon <= -0.65:
-                return "Tamale, Northern"
-            elif 4.75 <= f_lat <= 5.05 and -1.95 <= f_lon <= -1.65:
-                return "Takoradi, Western"
-            elif 5.05 <= f_lat <= 5.25 and -1.40 <= f_lon <= -1.15:
-                return "Cape Coast, Central"
-            elif 5.95 <= f_lat <= 6.20 and -0.40 <= f_lon <= -0.15:
-                return "Koforidua, Eastern"
-            elif 7.20 <= f_lat <= 7.45 and -2.45 <= f_lon <= -2.15:
-                return "Sunyani, Bono"
-            elif 6.45 <= f_lat <= 6.75 and 0.35 <= f_lon <= 0.65:
-                return "Ho, Volta"
-            elif 4.5 <= f_lat <= 11.5 and -3.5 <= f_lon <= 1.5:
-                return "Ghana (Mobile Network)"
-            return f"Location ({f_lat:.2f}°, {f_lon:.2f}°)"
+            if (
+                math.isfinite(f_lat)
+                and math.isfinite(f_lon)
+                and -90 <= f_lat <= 90
+                and -180 <= f_lon <= 180
+            ):
+                from services.geolocation import reverse_geocode_coordinates
+
+                return reverse_geocode_coordinates(f_lat, f_lon)
         except (ValueError, TypeError):
-            pass
+            return None
 
-    for key in (case.get("customer_ref"), case.get("origin_account"), case.get("destination_account")):
-        if key and key in _KNOWN_KYC_LOCATIONS:
-            return _KNOWN_KYC_LOCATIONS[key]
-
-    return "Primary Registered Location"
+    return None
 
 
 def get_fraud_cases(include_resolved=False):
@@ -1437,6 +1364,7 @@ def get_fraud_cases(include_resolved=False):
                 t.location_latitude,
                 t.location_longitude,
                 t.location_name,
+                t.location_accuracy_meters,
                 r.risk_score,
                 r.risk_level,
                 a.severity,
@@ -1898,6 +1826,7 @@ def create_momo_session(
     otp_expires_at=None,
     device_label=None,
     location_name=None,
+    location_accuracy_meters=None,
 ):
     """Create an in-flight transaction session for the simulated MoMo flow."""
     connection = get_connection()
@@ -1923,11 +1852,12 @@ def create_momo_session(
             location_latitude,
             location_longitude,
             location_name,
+            location_accuracy_meters,
             status,
             created_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
         """,
         (
             session_id,
@@ -1946,6 +1876,7 @@ def create_momo_session(
             location_latitude,
             location_longitude,
             location_name,
+            location_accuracy_meters,
             now,
             now
         )
@@ -2986,17 +2917,18 @@ def record_customer_security_signal(
     trusted=False,
     location_consent=False,
     location_name=None,
+    location_accuracy_meters=None,
 ):
-    """Persist privacy-disclosed device, network, and coarse location observations."""
+    """Persist privacy-disclosed device, network, and GPS observations."""
     connection = get_connection()
     try:
         cursor = connection.execute(
             """
             INSERT INTO customer_security_signals (
                 customer_ref, session_id, event_type, device_id, ip_address,
-                location_latitude, location_longitude, location_consent,
-                trusted, observed_at, location_name
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                location_latitude, location_longitude, location_accuracy_meters,
+                location_consent, trusted, observed_at, location_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             """,
             (
@@ -3007,6 +2939,7 @@ def record_customer_security_signal(
                 ip_address,
                 location_latitude,
                 location_longitude,
+                location_accuracy_meters,
                 int(bool(location_consent)),
                 int(trusted),
                 datetime.now(timezone.utc).isoformat(),

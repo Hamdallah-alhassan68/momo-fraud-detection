@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import { API_URL, adminFetch } from "./adminApi.js";
-import { detectActualDeviceName, detectDeviceLabel, formatDeviceDisplayName } from "./deviceInfo.js";
+import {
+  captureDeviceLocation,
+  detectActualDeviceName,
+  detectDeviceLabel,
+  formatDeviceDisplayName,
+} from "./deviceInfo.js";
 import "./MomoSimulator.css";
 
 const TYPE_OPTIONS = [
@@ -62,6 +67,9 @@ export default function MomoSimulator() {
   const [deviceId, setDeviceId] = useState("");
   const [actualDevice, setActualDevice] = useState("");
   const [scenarios, setScenarios] = useState([]);
+  const [shareLocation, setShareLocation] = useState(false);
+  const [locationCoords, setLocationCoords] = useState(null);
+  const [locationStatus, setLocationStatus] = useState("prompt");
 
   const [session, setSession] = useState(null);
   const [code, setCode] = useState("");
@@ -185,6 +193,15 @@ export default function MomoSimulator() {
     setError("");
     setLoading(true);
 
+    let activeLocation = null;
+    if (shareLocation) {
+      setLocationStatus("requesting");
+      const captured = await captureDeviceLocation();
+      activeLocation = captured.coords;
+      setLocationCoords(captured.coords);
+      setLocationStatus(captured.status);
+    }
+
     const payload = {
       customer_ref: customerRef,
       transaction_type: type,
@@ -193,6 +210,17 @@ export default function MomoSimulator() {
       device_id: deviceId,
       device_label: await detectDeviceLabel(),
       scenarios,
+      location_consent: Boolean(shareLocation && activeLocation),
+      ...(shareLocation && activeLocation
+        ? {
+            location_latitude: activeLocation.latitude,
+            location_longitude: activeLocation.longitude,
+            location_accuracy_meters: activeLocation.accuracy,
+            ...(activeLocation.location_name
+              ? { location_name: activeLocation.location_name }
+              : {}),
+          }
+        : {}),
     };
 
     try {
@@ -653,6 +681,35 @@ export default function MomoSimulator() {
                     toggled here. Nothing on this page queries MTN telemetry.
                   </small>
                 </fieldset>
+
+                <label className="field-guidance" style={{ display: "flex", alignItems: "flex-start", gap: "0.5rem", marginBottom: "0.75rem" }}>
+                  <input
+                    type="checkbox"
+                    checked={shareLocation}
+                    onChange={async (e) => {
+                      const next = e.target.checked;
+                      setShareLocation(next);
+                      if (next) {
+                        setLocationStatus("requesting");
+                        const captured = await captureDeviceLocation();
+                        setLocationCoords(captured.coords);
+                        setLocationStatus(captured.status);
+                      } else {
+                        setLocationCoords(null);
+                        setLocationStatus("prompt");
+                      }
+                    }}
+                    style={{ marginTop: "0.2rem" }}
+                  />
+                  <span>
+                    Share device GPS location (optional).
+                    {shareLocation && locationCoords
+                      ? ` Reported point: ${locationCoords.latitude.toFixed(6)}°, ${locationCoords.longitude.toFixed(6)}°; accuracy ±${locationCoords.accuracy ?? "unknown"} m.`
+                      : locationStatus === "denied"
+                        ? " (browser permission denied — continuing without GPS)"
+                        : ""}
+                  </span>
+                </label>
 
                 <div className="security-section" id="momo-security-controls">
                   <p className="security-note">
