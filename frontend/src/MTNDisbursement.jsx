@@ -1259,30 +1259,13 @@ export default function MTNDisbursement() {
               <div className="balance-surface">
                 <div className="balance-top-labels">
                   <span className="balance-label-text">Available Balance</span>
-                  <div className="balance-header-controls">
-                    {customerAccount && !walletFrozen && (
-                      <button
-                        type="button"
-                        className="header-freeze-pill-btn"
-                        onClick={() => {
-                          setError("");
-                          setSecurityPin("");
-                          setActiveModal("freeze");
-                        }}
-                        title="Emergency freeze your wallet"
-                      >
-                        <LockIcon />
-                        <span>Freeze</span>
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="balance-visibility-btn"
-                      onClick={() => setShowBalance(!showBalance)}
-                    >
-                      {showBalance ? "Hide" : "Show"}
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className="balance-visibility-btn"
+                    onClick={() => setShowBalance(!showBalance)}
+                  >
+                    {showBalance ? "Hide" : "Show"}
+                  </button>
                 </div>
                 <div className="balance-amount-display">
                   <span className="currency-symbol">{displayCurrency}</span>
